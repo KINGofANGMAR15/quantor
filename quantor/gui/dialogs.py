@@ -103,6 +103,77 @@ class EquationDialog(QDialog):
         self._insert(item.text().split("=", 1)[1].strip())
 
 
+class InequalityDialog(QDialog):
+    """Решение неравенств степени 1–4: вывод множества решений."""
+
+    def __init__(self, parent, engine: CalculatorEngine,
+                 insert_callback: Callable[[str], None]) -> None:
+        super().__init__(parent)
+        self.engine = engine
+        self._insert = insert_callback
+        self.setWindowTitle("Неравенства — Квантор")
+        self.setMinimumWidth(520)
+
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        form.setContentsMargins(0, 0, 0, 0)
+
+        self.ineq_edit = QLineEdit("x^2-4<0")
+        form.addRow("Неравенство (x^2-4<0, 2x-1>=3):", self.ineq_edit)
+
+        self.var_edit = QLineEdit("x")
+        form.addRow("Переменная:", self.var_edit)
+        layout.addLayout(form)
+
+        self.list = QListWidget()
+        layout.addWidget(self.list, 1)
+
+        self.status = QLabel("")
+        self.status.setStyleSheet("color: #b3261e;")
+        layout.addWidget(self.status)
+
+        hint = QLabel(
+            "Поддерживаются полиномы степени 1–4: x^2-4<0, "
+            "x^3-6x^2+11x-6>=0, 0.5x<2.\n"
+            "Знаки: <, >, <=, >=, ≤, ≥. Правую часть можно опустить (x<0).")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        buttons = QHBoxLayout()
+        solve = QPushButton("Решить")
+        solve.setDefault(True)
+        solve.clicked.connect(self.solve)
+        insert = QPushButton("Вставить в дисплей")
+        insert.setToolTip("Вставить неравенство в строку ввода калькулятора")
+        insert.clicked.connect(self._insert_ineq)
+        close = QPushButton("Закрыть")
+        close.clicked.connect(self.reject)
+        buttons.addWidget(solve)
+        buttons.addWidget(insert)
+        buttons.addStretch(1)
+        buttons.addWidget(close)
+        layout.addLayout(buttons)
+
+        self.ineq_edit.returnPressed.connect(self.solve)
+
+    def solve(self) -> None:
+        self.list.clear()
+        self.status.setText("")
+        var = self.var_edit.text().strip() or "x"
+        try:
+            parts = self.engine.solve_inequality(self.ineq_edit.text(), var)
+        except (CalculatorError, ValueError) as exc:
+            self.status.setText(f"Ошибка: {exc}")
+            return
+        for part in parts:
+            self.list.addItem(part)
+
+    def _insert_ineq(self, *_args) -> None:
+        text = self.ineq_edit.text().strip()
+        if text:
+            self._insert(text)
+
+
 class HistoryDialog(QDialog):
     """История вычислений: двойной щелчок вставляет выражение."""
 

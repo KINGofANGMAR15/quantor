@@ -20,14 +20,15 @@ from PySide6.QtWidgets import (
 from .. import constants as K
 from ..calculus import CalculusEngine, is_calculus_query
 from ..engine import (
-    ANGLE_MODES, CalculatorEngine, CalculatorError, _fmt_number,
-    _exact_to_number, format_exact,
+    ANGLE_MODES, CalculatorEngine, CalculatorError, INEQ_RE,
+    _fmt_number, _exact_to_number, _format_solution_set, _guess_var,
+    format_exact,
 )
 from ..latex_input import (
     LatexParseError, is_latex, parse_input, render_latex, to_latex,
 )
 from ..settings import load_settings, save_settings
-from .dialogs import EquationDialog, HistoryDialog
+from .dialogs import EquationDialog, HistoryDialog, InequalityDialog
 
 # --- палитра (светлая) ---------------------------------------------------------
 BG = "#f4f4f2"
@@ -215,6 +216,11 @@ class MainWindow(QMainWindow):
         seq_eq.triggered.connect(self._open_equation)
         self.addAction(seq_eq)
 
+        seq_ineq = QAction("Решить неравенство", self)
+        seq_ineq.setShortcut(QKeySequence("Ctrl+I"))
+        seq_ineq.triggered.connect(self._open_inequality)
+        self.addAction(seq_ineq)
+
         seq_copy = QAction("Копировать LaTeX", self)
         seq_copy.setShortcut(QKeySequence("Ctrl+Shift+C"))
         seq_copy.triggered.connect(self._copy_latex)
@@ -243,6 +249,10 @@ class MainWindow(QMainWindow):
         hist = QAction("История", self)
         hist.triggered.connect(self._show_history)
         menubar.addAction(hist)
+
+        ineq = QAction("Неравенства", self)
+        ineq.triggered.connect(self._open_inequality)
+        menubar.addAction(ineq)
         about = QAction("О программе", self)
         about.triggered.connect(self._show_about)
         menubar.addAction(about)
@@ -279,6 +289,8 @@ class MainWindow(QMainWindow):
         try:
             if is_calculus_query(text):
                 self._show_calculus(self.calculus.evaluate_query(text))
+            elif INEQ_RE.search(text):
+                self._show_inequality(text)
             elif is_latex(text):
                 self._show_symbolic(parse_input(text, self.engine))
             else:
@@ -295,7 +307,8 @@ class MainWindow(QMainWindow):
         self.result.setText(f"= {shown}")
         self.result.setProperty("err", False)
         self._style_refresh(self.result)
-        self._set_result_preview(to_latex(sp.sympify(value)))
+        self._set_result_preview(
+            to_latex(sp.sympify(value)) if value is not None else "")
         self.input.setText(shown)
         self.input.setCursorPosition(len(shown))
 
@@ -337,6 +350,26 @@ class MainWindow(QMainWindow):
         self._set_result_preview(res.latex)
         if res.value is not None:
             self.engine.ans = res.value
+
+    def _show_inequality(self, text: str) -> None:
+        """Неравенство прямо в строке ввода: x^2-4<0 -> «-2 < x < 2»."""
+        var = _guess_var(text)
+        try:
+            sol = self.engine.solve_inequality_set(text, var)
+        except CalculatorError as exc:
+            self._show_error(str(exc))
+            return
+        except Exception as exc:
+            self._show_error(f"Внутренняя ошибка: {exc.__class__.__name__}")
+            return
+        shown = " или ".join(_format_solution_set(sol, var))
+        prefix = "" if shown.startswith("x =") else "= "  # без дубля «x = 1»
+        self._last_value = None  # Ans не трогаем: число здесь не при чём
+        self._history.append((text, shown))
+        self.result.setText(f"{prefix}{shown}")
+        self.result.setProperty("err", False)
+        self._style_refresh(self.result)
+        self._set_result_preview(to_latex(sol))
 
     def _show_error(self, message: str) -> None:
         self.result.setText(f"Ошибка: {message}")
@@ -459,6 +492,9 @@ class MainWindow(QMainWindow):
     def _open_equation(self) -> None:
         EquationDialog(self, self.engine, self.calculus, self._insert_at_cursor).exec()
 
+    def _open_inequality(self) -> None:
+        InequalityDialog(self, self.engine, self._insert_at_cursor).exec()
+
     def _show_history(self) -> None:
         HistoryDialog(self, self._history, self._insert_at_cursor).exec()
 
@@ -470,7 +506,8 @@ class MainWindow(QMainWindow):
             "LaTeX-предпросмотр: matplotlib mathtext.\n"
             "Все вычисления выполняются локально, сеть не используется.\n\n"
             "Горячие клавиши: Enter — вычислить, Esc — очистить,\n"
-            "Ctrl+E — уравнения, Ctrl+Shift+C — копировать LaTeX.")
+            "Ctrl+E — уравнения, Ctrl+I — неравенства,\n"
+            "Ctrl+Shift+C — копировать LaTeX.")
 
     # ------------------------------------------------------------------ настройки
     def _apply_settings(self) -> None:

@@ -15,6 +15,7 @@ CalculatorEngine — фасад для GUI и тестов:
 from __future__ import annotations
 
 import math
+import re
 from typing import Any, Dict, List, Sequence, Tuple, Union
 
 import sympy as sp
@@ -38,6 +39,133 @@ _TRANSFORMS = standard_transformations + (implicit_multiplication_application,)
 # Точки старта для численного поиска корней nsolve (обычные уравнения).
 _NUM_STARTS = (-20.0, -10.0, -5.0, -2.0, -1.0, -0.5, 0.001,
                0.5, 1.0, 2.0, 3.0, 5.0, 7.0, 10.0, 15.0, 20.0)
+
+# Знаки неравенств: <= раньше <, >= раньше > (иначе поймаем половину знака)
+INEQ_RE = re.compile(r"<=|>=|≤|≥|<|>")
+
+#: Буквы-константы, которые нельзя считать переменными неравенства
+_INEQ_CONSTANT_LETTERS = {"e", "E"}
+
+
+def _guess_var(text: str) -> str:
+    """Переменная неравенства по тексту: одиночные латинские буквы.
+    Приоритет x, y, z, t, …; одиночные буквы-константы (e, E) пропускаем."""
+    letters = re.findall(r"(?<![A-Za-z])[A-Za-z](?![A-Za-z])", text)
+    letters = [ch for ch in letters if ch not in _INEQ_CONSTANT_LETTERS]
+    for pref in ("x", "y", "z", "t", "u", "v", "w", "n"):
+        if pref in letters:
+            return pref
+    return letters[0] if letters else "x"
+
+
+def _bound_str(bound: sp.Basic) -> str:
+    """Граница интервала: '√2', '3/2', '-1.324717957'."""
+    if bound in (sp.oo, -sp.oo):
+        return ""
+    return format_exact(bound) or _fmt_number(_exact_to_number(bound))
+
+
+def _dedupe_roots(roots: List[sp.Basic]) -> List[sp.Basic]:
+    """Убрать кратные корни, сохранив порядок."""
+    out: List[sp.Basic] = []
+    for r in roots:
+        if not any(sp.simplify(r - o) == 0 for o in out):
+            out.append(r)
+    return out
+
+
+def _sample_f(f: sp.Basic, sym: sp.Symbol, lo: sp.Basic, hi: sp.Basic) -> float:
+    """Знак f в пробной точке интервала (lo, hi)."""
+    if lo == -sp.oo and hi == sp.oo:
+        x0 = 0.0
+    elif lo == -sp.oo:
+        x0 = float(sp.N(hi)) - 1.0
+    elif hi == sp.oo:
+        x0 = float(sp.N(lo)) + 1.0
+    else:
+        x0 = (float(sp.N(lo)) + float(sp.N(hi))) / 2.0
+    return float(sp.N(f.subs(sym, x0)))
+
+
+def _poly_ineq_set(f: sp.Basic, sym: sp.Symbol, op: str) -> sp.Set:
+    """Решение «f(sym) <один из <,<=,>,>=» 0 через корни и знаки интервалов."""
+    strict = op in ("<", ">")
+    want_pos = op in (">", ">=")
+    roots = _dedupe_roots(list(sp.Poly(f, sym).real_roots()))
+
+    points: List[sp.Basic] = []
+    try:
+        roots = sorted(roots, key=lambda r: float(sp.N(r)))
+    except (TypeError, ValueError):
+        pass
+
+    intervals: List[sp.Interval] = []
+    points = [-sp.oo] + roots + [sp.oo]
+    for lo, hi in zip(points, points[1:]):
+        if lo == hi:            # вырожденный интервал между дубликатами
+            continue
+        val = _sample_f(f, sym, lo, hi)
+        if (val > 0) == want_pos:
+            intervals.append(sp.Interval(
+                lo, hi,
+                left_open=(lo in (-sp.oo, sp.oo) or strict),
+                right_open=(hi in (-sp.oo, sp.oo) or strict)))
+
+    parts: List[sp.Set] = list(intervals)
+    if not strict:
+        covered = sp.Union(*intervals) if intervals else sp.S.EmptySet
+        extra = [r for r in roots if not bool(covered.contains(r))]
+        if extra:
+            parts.append(sp.FiniteSet(*extra))
+    if not parts:
+        return sp.S.EmptySet
+    return sp.Union(*parts)
+
+
+def _format_interval(iv: sp.Interval, var: str) -> str:
+    """Interval(-2, 2, True, True) -> '-2 < x < 2' (знаки ≤/≥ для границ)."""
+    low, high = _bound_str(iv.start), _bound_str(iv.end)
+    l_open, r_open = iv.left_open, iv.right_open
+    if iv.start in (-sp.oo, sp.oo):
+        op = "<" if r_open else "≤"     # x слева от конца интервала
+        return f"{var} {op} {high}"
+    if iv.end in (-sp.oo, sp.oo):
+        op = ">" if l_open else "≥"     # x справа от начала интервала
+        return f"{var} {op} {low}"
+    l_op = "<" if l_open else "≤"
+    r_op = "<" if r_open else "≤"
+    return f"{low} {l_op} {var} {r_op} {high}"
+
+
+def _format_solution_set(sol: sp.Set, var: str = "x") -> List[str]:
+    """Множество решений -> текстовые части: ['x < -2', 'x > 2']."""
+    if sol == sp.S.EmptySet:
+        return ["решений нет (∅)"]
+    if sol == sp.S.Reals:
+        return [f"{var} — любое действительное число"]
+    if isinstance(sol, sp.FiniteSet):
+        pts = [_bound_str(p) for p in sol.args]
+        return [f"{var} = {pts[0]}"] if len(pts) == 1 else \
+            [f"{var} ∈ {{{', '.join(pts)}}}"]
+    if isinstance(sol, sp.Interval):
+        return [_format_interval(sol, var)]
+    if isinstance(sol, sp.Union):
+        parts: List[str] = []
+        try:
+            items = sorted(sol.args, key=lambda s: s.start)
+        except (AttributeError, TypeError):
+            items = list(sol.args)
+        for s in items:
+            parts.extend(_format_solution_set(s, var))
+        return [" или ".join(parts)] if len(parts) > 1 else parts
+    if isinstance(sol, sp.Complement):
+        universe, exc = sol.args
+        if isinstance(exc, sp.FiniteSet):
+            pts = ", ".join(_bound_str(p) for p in exc.args)
+            return [f"{var} ≠ {pts}"] if len(exc.args) == 1 else \
+                [f"{var} ∉ {{{pts}}}"]
+    # непонятное множество — показываем как есть
+    return [sp.sstr(sol)]
 
 
 class CalculatorError(Exception):
@@ -351,6 +479,8 @@ class CalculatorEngine:
         text = (expr or "").strip()
         if not text:
             raise CalculatorError("Пустой ввод")
+        if INEQ_RE.search(text):
+            return self._solve_ineq_and_format(text)
         if "=" in text:
             return self._solve_and_format(text)
         ns = self._namespace()
@@ -459,6 +589,91 @@ class CalculatorEngine:
             if not any(abs(xv - r0) <= 1e-7 * max(1.0, abs(xv)) for r0 in found):
                 found.append(xv)
         return found
+
+    # --- неравенства -----------------------------------------------------------
+    def solve_inequality_set(self, text: str, var: str = None) -> sp.Set:
+        """Решить неравенство степени 1–4. Возвращает SymPy-множество.
+
+        Примеры: ``x^2-4<0``, ``2x-1>=3``, ``x^4-5x^2+4<=0``.
+        Правая часть может отсутствовать («x^2>1» -> «x^2>0»? нет:
+        «x<0» означает «x < 0»). Знаки: <, >, <=, >=, ≤, ≥.
+        """
+        text = (text or "").strip()
+        m = INEQ_RE.search(text)
+        if not m:
+            raise CalculatorError(
+                "Не найден знак неравенства (поддерживаются <, >, <=, >=, ≤, ≥)")
+        op_txt = {"≤": "<=", "≥": ">="}.get(m.group(), m.group())
+        lhs, rhs = text[:m.start()].strip(), text[m.end():].strip()
+        if not lhs or not rhs:
+            raise CalculatorError(
+                "Пустая часть неравенства (например: x^2-4<0, 2x-1>=3)")
+
+        var = var or _guess_var(text)
+        sym = sp.Symbol(var)
+        ns = {var: sym, "Ans": self.ans, "sqrt": sp.sqrt, "exp": sp.exp,
+              "abs": sp.Abs, "ln": sp.log, "log": self._logb}
+        self._trig_into(ns)
+
+        try:
+            left = self._parse_side(lhs, ns)
+            right = self._parse_side(rhs, ns)
+        except CalculatorError as exc:
+            raise CalculatorError(f"Ошибка ввода: {exc}") from exc
+        f = sp.expand(left - right)
+        # десятичные коэффициенты -> точные рациональные (0.5 -> 1/2)
+        f = f.xreplace({a: sp.Rational(str(a)) for a in f.atoms(sp.Float)})
+
+        others = f.free_symbols - {sym}
+        if others:
+            raise CalculatorError(
+                "Неравенство решается по одной переменной ("
+                + ", ".join(sorted(str(s) for s in others)) + ")")
+
+        rel_ops = {"<": sp.Lt, "<=": sp.Le, ">": sp.Gt, ">=": sp.Ge}
+        rel = rel_ops[op_txt](f, 0)
+
+        if sym not in f.free_symbols:
+            # «0 < 1» — верно всегда; «2 < 1» — никогда
+            if rel:
+                return sp.S.Reals
+            return sp.S.EmptySet
+        if f == 0:
+            return sp.S.Reals if rel else sp.S.EmptySet
+
+        try:
+            deg = sp.Poly(f, sym).degree()
+        except sp.PolynomialError:
+            raise CalculatorError(
+                "Поддерживаются неравенства с полиномом степени 1–4")
+        if deg > 4:
+            raise CalculatorError("Поддерживаются неравенства степени 1–4")
+
+        try:
+            return _poly_ineq_set(f, sym, op_txt)
+        except sp.PolynomialError:
+            raise CalculatorError(
+                "Поддерживаются неравенства с полиномом степени 1–4")
+        except Exception:
+            raise CalculatorError("Не удалось решить неравенство")
+
+    def _parse_side(self, side: str, ns: Dict[str, Any]) -> sp.Basic:
+        """Разбор части неравенства: обычный ввод, при ошибке — LaTeX."""
+        try:
+            return self._parse(side, ns)
+        except CalculatorError:
+            from .latex_input import parse_input  # локальный импорт (циклы)
+            return parse_input(side, self)
+
+    def solve_inequality(self, text: str, var: str = None) -> List[str]:
+        """Решить неравенство. Возвращает список частей решения:
+        ['x < -2', 'x > 2'] или ['решений нет']."""
+        sol = self.solve_inequality_set(text, var)
+        return _format_solution_set(sol, var or _guess_var(text))
+
+    def _solve_ineq_and_format(self, text: str) -> Result:
+        parts = self.solve_inequality(text)
+        return " или ".join(parts), None
 
     # --- служебное ---------------------------------------------------------------
     def _solve_and_format(self, text: str) -> Result:
