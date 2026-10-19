@@ -1,0 +1,121 @@
+# Квантор (Quantor) — офлайн инженерный калькулятор
+
+Десктопный инженерный калькулятор, функционально близкий к Casio fx-991EX,
+с LaTeX-вводом, живым предпросмотром формул и символьным матанализом.
+Работает полностью офлайн: сеть не используется.
+
+* **Windows 10/11** и **Linux** (Mint 21+, EndeavourOS) из одного исходника.
+* **GUI: PySide6 (Qt 6)**, математика: **SymPy + mpmath**.
+* Обычный ввод (`sin(x)/2`) **и** LaTeX (`\frac{\sin(x)}{2}`) — формат определяется
+  автоматически; над строкой ввода — живой предпросмотр формулы
+  (рендеринг matplotlib mathtext, TeX-дистрибутив не нужен).
+* Тригонометрия DEG/RAD, логарифмы (`ln`, `log`, `log10`, `log2`, `log(x, b)`),
+  полиномы 2–4 степени (все корни, включая комплексные), константы (π, e, c, h, ħ, G,
+  N_A, k, qe, me, mp, atm), память M+/M−/MR/MC, Ans, история.
+* Интегралы: `\int x^2 dx`, `\int_{0}^{\pi} \sin(x) dx` — точное значение SymPy +
+  численное через `mpmath.quad` (10 знаков).
+* Производные: `\frac{d}{dx} \sin(x)`, `\frac{d^2}{dx^2} x^4`,
+  значение в точке `\frac{d}{dx} \sin(x) \big|_{x=0}` (до 3-го и выше порядка).
+* Кнопка «⧉ LaTeX» копирует текущее выражение в буфер обмена в LaTeX.
+
+## Запуск из исходников (Python 3.10+)
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate            # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+python -m quantor
+```
+
+На Linux для Qt из пакета могут понадобиться системные библиотеки:
+Mint: `sudo apt install libgl1 libegl1`; EndeavourOS: `sudo pacman -S libglvnd`.
+
+## Синтаксис ввода
+
+| Пример | Результат |
+|---|---|
+| `sin(30)` в DEG | `0.5` |
+| `\frac{1}{2} + \frac{1}{3}` | `5/6` (точная дробь, не 0.8333) |
+| `\int x^2 dx` | `x^3/3 + C` |
+| `\int_{0}^{\pi} \sin(x) dx` | `точно: 2`, `численно: 2.0000000000` |
+| `\frac{d}{dx} \sin(x)` | `cos(x)` |
+| `\frac{d^2}{dx^2} x^4` | `12*x^2` |
+| `\frac{d}{dx} \sin(x) \big|_{x=0}` | `1.0` |
+| `integrate(x^2, x)` / `diff(sin(x), x, 2)` | текстовые формы тех же операций |
+| `x^3-6x^2+11x-6=0` | `x = 1, 2, 3` |
+| `2^x=8` | `x = 3` |
+| `log(8, 2)` | `3` (произвольное основание) |
+
+Кнопки «∫ dx», «∫ₐᵇ dx», «d/dx», «d²/dx²», «d³/dx³», «|ₓ₌ₐ» вставляют готовые
+шаблоны. Матанализ всегда считается в радианах (независимо от DEG/RAD режима
+арифметики). Если символьное интегрирование не удалось — показывается
+«символьное решение не найдено» и только численный результат.
+
+Горячие клавиши: `Enter` — вычислить, `Esc` — очистить, `Ctrl+E` — уравнения,
+`Ctrl+Shift+C` — копировать LaTeX.
+
+## Тесты
+
+```bash
+python -m pytest -q
+```
+
+60 тестов: арифметика, тригонометрия, логарифмы, память, полиномы, уравнения,
+LaTeX-парсер (включая ошибочный ввод), рендеринг, интегралы, производные,
+разбор запросов.
+
+## Сборка PyInstaller
+
+Кросс-компиляции нет: `.exe` собирайте на Windows, Linux-бинарник — на Linux.
+
+### Windows 10/11
+
+```bat
+py -3.10 -m venv .venv
+.venv\Scripts\pip install -r requirements.txt
+.venv\Scripts\pip install pyinstaller
+.venv\Scripts\pyinstaller --clean quantor.spec
+```
+
+Результат: `dist\Quantor.exe` (one-file, GUI без консоли). WebEngine и прочие
+тяжёлые модули Qt исключены спекой — бинарник заметно меньше.
+
+### Linux (Mint 21+ / EndeavourOS)
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt pyinstaller
+.venv/bin/pyinstaller --clean quantor.spec
+```
+
+Результат: `dist/Quantor`. Для меню приложений —
+`~/.local/share/applications/quantor.desktop`:
+
+```ini
+[Desktop Entry]
+Type=Application
+Name=Квантор
+Exec=/полный/путь/к/dist/Quantor
+Icon=applications-utilities
+Categories=Science;Math;Utility;
+```
+
+## Архитектура
+
+```
+quantor/quantor/engine.py       # ядро арифметики: calculate, solve_polynomial, solve_equation, память
+quantor/quantor/constants.py    # константы CODATA-2018 (встроенный словарь)
+quantor/quantor/latex_input.py  # автоопределение LaTeX/обычного ввода, parse_input, render_latex
+quantor/quantor/calculus.py     # CalculusEngine: интегралы, производные, разбор запросов
+quantor/quantor/settings.py     # JSON-настройки
+quantor/quantor/gui/            # PySide6: main_window.py, dialogs.py
+quantor/tests/                  # pytest
+quantor.spec                    # сборка PyInstaller
+```
+
+## Ограничения
+
+* Численный поиск корней общих уравнений — только вещественные.
+* matplotlib mathtext рендерит подмножество LaTeX; неподдерживаемые конструкции
+  показываются текстом (приложение не падает).
+* В LaTeX-вводе `e` трактуется как число Эйлера (в обычном вводе — так же).
