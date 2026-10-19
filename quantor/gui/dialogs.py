@@ -92,9 +92,12 @@ class EquationDialog(QDialog):
             return
         for i, root in enumerate(roots, 1):
             self.list.addItem(f"x{i} = {_fmt_number(root)}")
+        # Первая строка выбрана сразу: «Вставить в дисплей» работает без клика
+        self.list.setCurrentRow(0)
 
     def _insert_selected(self, *_args) -> None:
-        item = self.list.currentItem()
+        item = self.list.currentItem() or (
+            self.list.item(0) if self.list.count() else None)
         if item is None:
             return
         self._insert(item.text().split("=", 1)[1].strip())
@@ -116,6 +119,8 @@ class HistoryDialog(QDialog):
         self.list.itemDoubleClicked.connect(self._recall)
         for expr, result in history:
             self.list.addItem(f"{expr}  =  {result}")
+        if self.list.count():
+            self.list.setCurrentRow(0)
         layout.addWidget(self.list, 1)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
@@ -127,7 +132,8 @@ class HistoryDialog(QDialog):
         layout.addWidget(buttons)
 
     def _recall(self, *_args) -> None:
-        item = self.list.currentItem()
+        item = self.list.currentItem() or (
+            self.list.item(0) if self.list.count() else None)
         if item is None:
             return
         expr = item.text().split("  =  ", 1)[0]
