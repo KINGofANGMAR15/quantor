@@ -543,6 +543,10 @@ class CalculatorEngine:
         eq = (eq or "").strip()
         if eq.count("=") > 1:
             raise CalculatorError("Нужно ровно одно «=» (например: 2^x = 8)")
+        if re.search(r"<=?|>=?|≤|≥", eq):
+            raise CalculatorError(
+                "Это неравенство, а не уравнение: введите его в строке ввода "
+                "калькулятора или в окне «Неравенства» (Ctrl+I)")
         if "=" in eq:
             lhs, rhs = (part.strip() for part in eq.split("="))
         else:
