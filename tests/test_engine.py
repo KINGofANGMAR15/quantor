@@ -91,6 +91,50 @@ def test_errors(engine):
 
 
 def test_formatting(engine):
-    assert engine.calculate("sin(30)")[0] == "0.5"
-    assert engine.calculate("sqrt(2)")[0] == "1.414213562"
-    assert engine.calculate("1/3")[0] == "0.3333333333"
+    # Точный «табличный» вид (как S⇔D у Casio): дроби и радикалы
+    assert engine.calculate("sin(30)")[0] == "1/2"
+    assert engine.calculate("sqrt(2)")[0] == "√2"
+    assert engine.calculate("1/3")[0] == "1/3"
+
+
+def test_table_trig_values(engine):
+    """Табличные тригонометрические значения — обыкновенными дробями/радикалами."""
+    table = {
+        "sin(30)": "1/2", "cos(30)": "√3/2", "tan(30)": "√3/3",
+        "sin(45)": "√2/2", "cos(45)": "√2/2", "tan(45)": "1",
+        "sin(60)": "√3/2", "cos(60)": "1/2", "tan(60)": "√3",
+        "sin(90)": "1", "cos(0)": "1", "tan(0)": "0",
+        "sin(15)": "(√6 - √2)/4", "cos(15)": "(√6 + √2)/4",
+        "tan(15)": "2 - √3", "cos(36)": "(√5 + 1)/4",
+        "sin(120)": "√3/2", "cos(135)": "-√2/2", "tan(135)": "-1",
+        "sin(150)": "1/2", "cos(150)": "-√3/2", "tan(150)": "-√3/3",
+        "sin(210)": "-1/2", "cos(225)": "-√2/2", "tan(225)": "1",
+        "sin(315)": "-√2/2", "cos(330)": "√3/2", "tan(330)": "-√3/3",
+        "asin(0.5)": "30", "acos(0.5)": "60", "atan(1)": "45",
+    }
+    for expr, expected in table.items():
+        assert engine.calculate(expr)[0] == expected, expr
+    # В RAD-режиме те же значения через π
+    rad = CalculatorEngine("RAD")
+    assert rad.calculate("sin(pi/6)")[0] == "1/2"
+    assert rad.calculate("tan(pi/4)")[0] == "1"
+    assert rad.calculate("sin(pi/12)")[0] == "(√6 - √2)/4"
+    assert rad.calculate("tan(pi/8)")[0] == "√2 - 1"
+    # Десятичный ввод остаётся десятичным, нетабличные углы — десятичные
+    assert engine.calculate("0.5")[0] == "0.5"
+    assert engine.calculate("sin(0.5)")[0] == "0.008726535498"
+    # Числовое значение (Ans) не меняется — точный вид только на дисплее
+    _, value = engine.calculate("cos(30)")
+    assert abs(value - 0.8660254037844386) < 1e-12
+
+
+def test_exact_display_misc(engine):
+    assert engine.calculate("10/4")[0] == "5/2"
+    assert engine.calculate("sqrt(8)")[0] == "2√2"
+    assert engine.calculate("2pi")[0] == "2π"
+    assert engine.calculate("pi/6")[0] == "π/6"
+    assert engine.calculate("2^10")[0] == "1024"
+    assert engine.calculate("0.5+0.25")[0] == "0.75"
+    assert engine.calculate("0.1+0.2")[0] == "0.3"
+    assert engine.calculate("sqrt(-4)")[0] == "2i"
+    assert engine.calculate("123456/7")[0] == "123456/7"

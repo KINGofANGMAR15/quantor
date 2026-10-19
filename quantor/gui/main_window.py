@@ -19,7 +19,10 @@ from PySide6.QtWidgets import (
 
 from .. import constants as K
 from ..calculus import CalculusEngine, is_calculus_query
-from ..engine import ANGLE_MODES, CalculatorEngine, CalculatorError, _fmt_number, _exact_to_number
+from ..engine import (
+    ANGLE_MODES, CalculatorEngine, CalculatorError, _fmt_number,
+    _exact_to_number, format_exact,
+)
 from ..latex_input import (
     LatexParseError, is_latex, parse_input, render_latex, to_latex,
 )
@@ -319,11 +322,10 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _display_text(expr: sp.Basic, value) -> str:
-        """Точный вид для рациональных (5/6), иначе — десятичный."""
-        if isinstance(value, complex):
-            return _fmt_number(value)
-        if expr.is_Rational and expr.q <= 10**6:
-            return f"{expr.p}/{expr.q}" if expr.q != 1 else str(expr.p)
+        """Точный вид (1/2, √3/2, π/4), иначе — десятичный."""
+        exact = format_exact(expr)
+        if exact is not None:
+            return exact
         return _fmt_number(value)
 
     def _show_calculus(self, res) -> None:

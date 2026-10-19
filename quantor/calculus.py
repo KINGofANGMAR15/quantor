@@ -282,9 +282,8 @@ def _plain(value: Any) -> str:
     if isinstance(value, sp.Basic):
         if value.free_symbols:
             return str(value).replace("**", "^")
-        from .engine import _exact_to_number
-        from .engine import _fmt_number
-        return _fmt_number(_exact_to_number(value))
+        from .engine import _exact_to_number, _fmt_number, format_exact
+        return format_exact(value) or _fmt_number(_exact_to_number(value))
     return str(value)
 
 

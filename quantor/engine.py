@@ -106,6 +106,150 @@ def _fmt_number(v: Number) -> str:
     return _fmt_float(v)
 
 
+# ---------------------------------------------------------------------------
+# Точный «табличный» вид: 1/2, √3/2, (√6 - √2)/4, 2π (как S⇔D у Casio)
+# ---------------------------------------------------------------------------
+
+#: Максимальный размер «красивой» записи, иначе — десятичная дробь
+_EXACT_MAX_LEN = 48
+
+
+def _is_nice(node: sp.Basic) -> bool:
+    """Выражение состоит только из целых, дробей, √(целое), π и e?"""
+    if node.is_Rational:
+        return abs(node.p) <= 10**12 and node.q <= 10**6
+    if node is sp.pi or node is sp.E:
+        return True
+    if isinstance(node, sp.Pow):
+        return (node.exp == sp.Rational(1, 2) and node.base.is_Integer
+                and 2 <= node.base <= 10**6)
+    if isinstance(node, (sp.Mul, sp.Add)):
+        if len(node.args) > 8:
+            return False
+        return all(_is_nice(a) for a in node.args)
+    return False
+
+
+def _rational_str(r: sp.Rational) -> str:
+    return str(r.p) if r.q == 1 else f"{r.p}/{r.q}"
+
+
+def _split_mul(node: sp.Mul):
+    """Mul -> (рациональный коэффициент, [нерациональные множители])."""
+    coeff = sp.Rational(1)
+    factors = []
+    for f in node.args:
+        if f.is_Rational:
+            coeff *= f
+        else:
+            factors.append(f)
+    return coeff, factors
+
+
+def _combine(coeff: sp.Rational, body: str) -> str:
+    """Коэффициент × тело: 1·√3 -> √3, -1·√2 -> -√2, 1/2·√3 -> √3/2."""
+    if body == "":
+        return _rational_str(coeff)
+    if coeff == 1:
+        return body
+    if coeff == -1:
+        return "-" + body
+    p, q = coeff.p, coeff.q
+    if q == 1:
+        return f"{p}{body}"
+    num = body if abs(p) == 1 else f"{abs(p)}{body}"
+    return f"-{num}/{q}" if p < 0 else f"{num}/{q}"
+
+
+def _join_terms(terms) -> str:
+    """[(строка)] -> 'a + b - c' со знаком внутри каждого слагаемого."""
+    out = ""
+    for i, t in enumerate(terms):
+        if i == 0:
+            out = t
+        elif t.startswith("-"):
+            out += " - " + t[1:]
+        else:
+            out += " + " + t
+    return out
+
+
+def _pretty_add(node: sp.Add) -> str:
+    """Сумма: по возможности общий знаменатель — (√6 - √2)/4, (1 + √5)/4."""
+    terms = []  # (коэффициент, тело: '√2', 'π', '' для константы)
+    for t in node.args:
+        if t.is_Rational:
+            if t != 0:
+                terms.append((t, ""))
+        elif isinstance(t, sp.Mul):
+            c, factors = _split_mul(t)
+            terms.append((c, "".join(_pretty_exact(f) for f in factors)))
+        else:
+            terms.append((sp.Rational(1), _pretty_exact(t)))
+    terms.sort(key=lambda cb: (cb[0].p < 0, cb[1] == "",
+                               tuple(-ord(ch) for ch in cb[1])))
+
+    dens = {c.q for c, _ in terms if c != 0}
+    if len(dens) == 1 and dens != {1}:
+        q = dens.pop()
+        inner_parts = []
+        for c, body in terms:
+            p = c.p
+            if p == 0:
+                continue
+            if body == "":
+                inner_parts.append(str(p))
+            elif p == 1:
+                inner_parts.append(body)
+            elif p == -1:
+                inner_parts.append("-" + body)
+            else:
+                inner_parts.append(f"{p}{body}")
+        return f"({_join_terms(inner_parts)})/{q}"
+    parts = []
+    for c, body in terms:
+        if body == "":
+            if c != 0:
+                parts.append(_rational_str(c))
+        elif c != 0:
+            parts.append(_combine(c, body))
+    return _join_terms(parts)
+
+
+def _pretty_exact(node: sp.Basic) -> str:
+    if node is sp.pi:
+        return "π"
+    if node is sp.E:
+        return "e"
+    if node.is_Rational:
+        return _rational_str(node)
+    if isinstance(node, sp.Pow):  # √k (проверено в _is_nice)
+        return f"√{node.base}"
+    if isinstance(node, sp.Mul):
+        coeff, factors = _split_mul(node)
+        return _combine(coeff, "".join(_pretty_exact(f) for f in factors))
+    if isinstance(node, sp.Add):
+        return _pretty_add(node)
+    return str(node)
+
+
+def format_exact(node: sp.Basic) -> "str | None":
+    """Точный вид выражения ('1/2', '√3/2', '(√6 - √2)/4', '2π') или None.
+
+    None — если результат не выражается такой «табличной» записью
+    (есть десятичные дроби, неизвестные переменные и т.п.).
+    """
+    if not isinstance(node, sp.Basic) or getattr(node, "free_symbols", None):
+        return None
+    if not _is_nice(node):
+        return None
+    try:
+        text = _pretty_exact(node)
+    except Exception:
+        return None
+    return text if 0 < len(text) <= _EXACT_MAX_LEN else None
+
+
 def _sort_roots(roots: Sequence[Number]) -> List[Number]:
     """Вещественные корни по возрастанию, затем комплексные (re, im)."""
     real = sorted(v for v in roots if not isinstance(v, complex))
@@ -217,7 +361,8 @@ class CalculatorEngine:
             pass  # неудачный simplify не мешает численному результату
         value = _exact_to_number(node)
         self.ans = value
-        return _fmt_number(value), value
+        # Точный вид (1/2, √3/2, 2π), если он существует; иначе десятичный
+        return format_exact(node) or _fmt_number(value), value
 
     # --- память --------------------------------------------------------------
     def mem_add(self, value: Number) -> None:
