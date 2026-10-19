@@ -69,6 +69,16 @@ def test_inequality_errors(engine, text, error):
     assert error in str(exc.value)
 
 
+def test_inequality_in_equation_dialog_hint(engine):
+    """Неравенство в окне уравнений -> понятная подсказка, а не TypeError."""
+    with pytest.raises(CalculatorError) as exc:
+        engine.solve_equation("x^2-4>0")
+    assert "Неравенства" in str(exc.value)
+    with pytest.raises(CalculatorError) as exc:
+        engine.solve_equation("x^2-4>=0")
+    assert "Неравенства" in str(exc.value)
+
+
 def test_calculate_routes_inequality_and_keeps_ans(engine):
     engine.calculate("2*2")                 # ans = 4 (float 4.0)
     shown, value = engine.calculate("x^2-4<0")

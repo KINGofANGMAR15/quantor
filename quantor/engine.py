@@ -19,6 +19,7 @@ import re
 from typing import Any, Dict, List, Sequence, Tuple, Union
 
 import sympy as sp
+from sympy.core.relational import Relational
 from sympy.parsing.sympy_parser import (
     implicit_multiplication_application,
     parse_expr,
@@ -551,10 +552,15 @@ class CalculatorEngine:
               "abs": sp.Abs, "ln": sp.log, "log": self._logb}
         self._trig_into(ns)
         try:
-            f = self._parse(lhs, ns) - self._parse(rhs, ns)
+            left, right = self._parse(lhs, ns), self._parse(rhs, ns)
         except CalculatorError as exc:
             raise CalculatorError(f"Ошибка ввода: {exc}") from exc
-        f = sp.expand(f)
+        # «x^2-4>0» вместо «=» — парсер вернёт отношение (Relational)
+        if isinstance(left, Relational) or isinstance(right, Relational):
+            raise CalculatorError(
+                "Это неравенство, а не уравнение: введите его в строке ввода "
+                "калькулятора или в окне «Неравенства» (Ctrl+I)")
+        f = sp.expand(left - right)
         if sp.simplify(f) == 0:
             raise CalculatorError("Бесконечно много решений")
         if sym not in f.free_symbols:
