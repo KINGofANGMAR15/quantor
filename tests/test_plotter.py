@@ -5,8 +5,8 @@ import pytest
 
 from quantor.engine import CalculatorEngine
 from quantor.plotter import (
-    PLOT_COLORS, PlotError, default_range, parse_functions, plot_data,
-    sample_curve,
+    PLOT_COLORS, PlotError, default_range, parse_functions, parse_lines,
+    plot_data, sample_curve, _numeric_poles,
 )
 
 import sympy as sp
@@ -15,6 +15,14 @@ import sympy as sp
 @pytest.fixture()
 def engine():
     return CalculatorEngine("DEG")
+
+
+@pytest.fixture()
+def isolated_settings(tmp_path, monkeypatch):
+    """GUI-тесты не должны читать реальные ~/.quantor/settings.json."""
+    from quantor import settings
+    monkeypatch.setattr(settings, "_DIR", str(tmp_path))
+    monkeypatch.setattr(settings, "_PATH", str(tmp_path / "settings.json"))
 
 
 # ---------------------------------------------------------------- разбор
@@ -37,8 +45,28 @@ def test_parse_errors(engine):
         parse_functions("x\nx^2+y", engine)            # вторая переменная
     with pytest.raises(PlotError, match="Строка 1"):
         parse_functions("5+q", engine)                  # неизвестное имя
-    with pytest.raises(PlotError, match="без знаков"):
-        parse_functions("x^2-4>0", engine)              # неравенство
+    with pytest.raises(PlotError, match="тождество"):
+        parse_functions("x^2=x^2", engine)              # LHS == RHS
+
+
+def test_parse_line_kinds(engine):
+    """Классификация строк: функция vs неявные связи."""
+    specs = parse_lines("y=x^2\nx^2+y^2=25\nx*y=1\nx^2-4>0\ny^2<16", engine)
+    assert [s["kind"] for s in specs] == ["func", "eq", "eq", "gt", "lt"]
+    assert str(specs[0]["expr"]) == "x**2"
+    assert str(specs[1]["expr"]) == "x**2 + y**2 - 25"
+
+
+def test_parse_functions_rejects_implicit(engine):
+    with pytest.raises(PlotError, match="неявная связь"):
+        parse_functions("x^2+y^2=25", engine)
+
+
+def test_parse_implicit_errors(engine):
+    with pytest.raises(PlotError, match="лишние"):
+        parse_lines("x^2+y^2=z", engine)                # третья переменная
+    with pytest.raises(PlotError, match="разобрать"):
+        parse_lines("1=", engine)                       # пустая часть
 
 
 def test_parse_latex_side(engine):
@@ -141,8 +169,91 @@ def test_plot_data_auto_ylim_robust(engine):
     assert abs(lo) < 50 and abs(hi) < 50           # а не ±тысячи
 
 
+# ------------------------------------------------------------------- асимптоты
+def test_asymptotes_rational(engine):
+    r = plot_data("1/x", engine, x0=-2, x1=2)
+    assert "x = 0" in r.asymptote_texts
+    assert "y = 0" in r.asymptote_texts
+    assert any(abs(p) < 1e-9 for p in r.v_positions)
+
+
+def test_asymptotes_tan_rad():
+    """tan: периодические полюсы x = π/2 + k·π."""
+    eng = CalculatorEngine("RAD")
+    r = plot_data("tan(x)", eng, x0=-3, x1=3)
+    assert "x = π/2 + k·π" in r.asymptote_texts
+    around = [round(p, 4) for p in r.v_positions]
+    assert 1.5708 in around and -1.5708 in around
+
+
+def test_asymptotes_tan_deg(engine):
+    """tan в DEG: полюсы на оси градусов — 90 + 180·k."""
+    r = plot_data("tan(x)", engine, x0=-360, x1=360)
+    assert "x = 90 + k·180" in r.asymptote_texts
+    positions = [round(p) for p in r.v_positions]
+    for deg in (-270, -90, 90, 270):
+        assert deg in positions
+
+
+def test_asymptotes_log(engine):
+    r = plot_data("log(x)", engine)
+    assert "x = 0" in r.asymptote_texts
+
+
+def test_asymptotes_oblique(engine):
+    r = plot_data("(x^2+1)/x", engine, x0=-5, x1=5)
+    assert "x = 0" in r.asymptote_texts
+    assert "y = x" in r.asymptote_texts
+    assert (1.0, 0.0) in [(round(k, 6), round(b, 6)) for k, b in r.o_lines]
+
+
+def test_asymptotes_linear_self_excluded(engine):
+    """Прямая y=x+1 не должна получать себе асимптоту."""
+    r = plot_data("x+1", engine)
+    assert r.asymptote_texts == [] and r.o_lines == []
+
+
+def test_numeric_poles_fallback(engine):
+    """Резерв: NaN-кластеры между конечными ветвями дают числовой полюс."""
+    xs = np.linspace(-10, 10, 2001)
+    ys = 1.0 / np.maximum(np.abs(xs - 2.0), 1e-9).copy()
+    ys[np.abs(xs - 2.0) < 1e-3] = np.nan
+    poles = _numeric_poles(xs, ys)
+    assert len(poles) == 1 and abs(poles[0] - 2.0) < 0.01
+
+
+# ------------------------------------------------------------------ неявные
+def test_implicit_mesh_circle(engine):
+    r = plot_data("x^2+y^2=25", engine)
+    assert len(r.meshes) == 1 and r.meshes[0].kind == "eq"
+    m = r.meshes[0]
+    assert m.Z.shape[0] == m.Z.shape[1] == 300
+    assert abs(m.Z[150, 150] + 25.0) < 0.5        # центр: -25
+    assert (m.Z > 0).any() and (m.Z < 0).any()    # есть нулевой уровень
+    assert r.ylim == (-10.0, 10.0)                # по умолчанию высота = полуширина
+
+
+def test_implicit_region(engine):
+    r = plot_data("x^2+y^2<16", engine)
+    m = r.meshes[0]
+    assert m.kind == "lt"
+    assert m.Z[150, 150] < 0                      # центр внутри области
+
+
+def test_implicit_mesh_finite_hole(engine):
+    """sqrt(…): NaN вне области определения не ломают сетку."""
+    r = plot_data("sqrt(x^2+y^2-1)<5", engine)
+    assert np.isnan(r.meshes[0].Z).any()
+
+
+def test_plot_data_mixed(engine):
+    r = plot_data("x^2\nx^2+y^2=25", engine, x0=-5, x1=5)
+    assert len(r.curves) == 1 and len(r.meshes) == 1
+    assert r.ylim == (-5.0, 5.0)                  # высота по полной ширине x
+
+
 # -------------------------------------------------------------------- GUI
-def test_plot_window_draws(qapp):
+def test_plot_window_draws(qapp, isolated_settings):
     from quantor.engine import CalculatorEngine
     from quantor.gui.plot_window import PlotDialog
 
@@ -151,14 +262,48 @@ def test_plot_window_draws(qapp):
     win.funcs_edit.setPlainText("sin(x)\ncos(x)")
     win._plot_current()
     ax = win.figure.axes[0]
-    assert len(ax.lines) == 2
+    curves = [l for l in ax.lines if l.get_color() in PLOT_COLORS]
+    assert len(curves) == 2
     assert ax.get_legend() is not None
     assert "градус" in ax.get_xlabel()
-    assert win.status.text().startswith("")       # без ошибок
+    assert win.status.text() == "" or "Ошибка" not in win.status.text()
+    # яркие оси и оси через начало координат
+    assert float(ax.spines["left"].get_linewidth()) >= 1.4
+    assert any(abs(l.get_linewidth() - 1.4) < 1e-6 and l.get_color() == "#1a1a1a"
+               for l in ax.lines)
+    # панель зума
+    assert hasattr(win, "nav") and win.nav is not None
+
+
+def test_plot_window_asymptotes_status(qapp, isolated_settings):
+    """tan: штриховые вертикальные линии + подписи асимптот в статусе."""
+    from quantor.gui.plot_window import PlotDialog
+
+    win = PlotDialog(None, CalculatorEngine("DEG"))
+    win.funcs_edit.setPlainText("tan(x)")
+    win._plot_current()
+    ax = win.figure.axes[0]
+    assert "Асимптоты" in win.status.text() and "90 + k·180" in win.status.text()
+    dashed = [l for l in ax.lines
+              if l.get_linestyle() in ("--", (0, (4, 3)))]
+    assert len(dashed) >= 4                       # ±90, ±270 внутри [-360; 360]
+
+
+def test_plot_window_implicit_draws(qapp, isolated_settings):
+    """Неявные: контур равенства и заливка области рисуются."""
+    from quantor.gui.plot_window import PlotDialog
+
+    win = PlotDialog(None, CalculatorEngine("RAD"))
+    win.funcs_edit.setPlainText("x^2+y^2=25\nx^2+y^2<16")
+    win._plot_current()
+    ax = win.figure.axes[0]
+    assert len(ax.collections) >= 2               # контур + заливка
     assert "Ошибка" not in win.status.text()
+    labels = win.figure.legends or []
+    assert len(ax.get_legend().get_texts()) == 2  # прокси-записи обеих линий
 
 
-def test_plot_window_error_status(qapp):
+def test_plot_window_error_status(qapp, isolated_settings):
     from quantor.engine import CalculatorEngine
     from quantor.gui.plot_window import PlotDialog
 
@@ -169,7 +314,7 @@ def test_plot_window_error_status(qapp):
     assert len(win.figure.axes[0].lines) > 0 or True  # окно не упало
 
 
-def test_main_window_opens_plot_once(qapp):
+def test_main_window_opens_plot_once(qapp, isolated_settings):
     from quantor.engine import CalculatorEngine
     from quantor.gui.main_window import MainWindow
 
