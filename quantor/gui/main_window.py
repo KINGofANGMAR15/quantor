@@ -29,6 +29,7 @@ from ..latex_input import (
 )
 from ..settings import load_settings, save_settings
 from .dialogs import EquationDialog, HistoryDialog, InequalityDialog
+from .plot_window import PlotDialog
 
 # --- палитра (светлая) ---------------------------------------------------------
 BG = "#f4f4f2"
@@ -221,6 +222,11 @@ class MainWindow(QMainWindow):
         seq_ineq.triggered.connect(self._open_inequality)
         self.addAction(seq_ineq)
 
+        seq_plot = QAction("Построить график", self)
+        seq_plot.setShortcut(QKeySequence("Ctrl+G"))
+        seq_plot.triggered.connect(self._open_plot)
+        self.addAction(seq_plot)
+
         seq_copy = QAction("Копировать LaTeX", self)
         seq_copy.setShortcut(QKeySequence("Ctrl+Shift+C"))
         seq_copy.triggered.connect(self._copy_latex)
@@ -253,6 +259,10 @@ class MainWindow(QMainWindow):
         ineq = QAction("Неравенства", self)
         ineq.triggered.connect(self._open_inequality)
         menubar.addAction(ineq)
+
+        plot = QAction("График", self)
+        plot.triggered.connect(self._open_plot)
+        menubar.addAction(plot)
         about = QAction("О программе", self)
         about.triggered.connect(self._show_about)
         menubar.addAction(about)
@@ -495,6 +505,16 @@ class MainWindow(QMainWindow):
     def _open_inequality(self) -> None:
         InequalityDialog(self, self.engine, self._insert_at_cursor).exec()
 
+    def _open_plot(self) -> None:
+        """Немодальное окно графика: одно на приложение, фокус при повторе."""
+        win = getattr(self, "_plot_win", None)
+        if win is not None and win.isVisible():
+            win.raise_()
+            win.activateWindow()
+            return
+        self._plot_win = PlotDialog(self, self.engine)
+        self._plot_win.show()
+
     def _show_history(self) -> None:
         HistoryDialog(self, self._history, self._insert_at_cursor).exec()
 
@@ -506,7 +526,7 @@ class MainWindow(QMainWindow):
             "LaTeX-предпросмотр: matplotlib mathtext.\n"
             "Все вычисления выполняются локально, сеть не используется.\n\n"
             "Горячие клавиши: Enter — вычислить, Esc — очистить,\n"
-            "Ctrl+E — уравнения, Ctrl+I — неравенства,\n"
+            "Ctrl+E — уравнения, Ctrl+I — неравенства, Ctrl+G — график,\n"
             "Ctrl+Shift+C — копировать LaTeX.")
 
     # ------------------------------------------------------------------ настройки
