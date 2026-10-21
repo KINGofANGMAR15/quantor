@@ -303,6 +303,89 @@ def test_plot_window_implicit_draws(qapp, isolated_settings):
     assert len(ax.get_legend().get_texts()) == 2  # прокси-записи обеих линий
 
 
+# ------------------------------------------------------- перерасчёт вида
+def test_view_recompute_extends_curve(qapp, isolated_settings):
+    """Панорама: кривая пересчитывается под новые границы x, а не обрывается."""
+    from quantor.gui.plot_window import PlotDialog
+
+    win = PlotDialog(None, CalculatorEngine("RAD"))
+    win.funcs_edit.setPlainText("sin(x)")
+    for e in (win.x0_edit, win.x1_edit, win.y0_edit, win.y1_edit):
+        e.clear()
+    win._plot_current()
+    old_r = win._result
+    ax = win.figure.axes[0]
+    ax.set_xlim(5.0, 15.0)
+    win._refresh_view()
+    r = win._result
+    assert (r.xlim[0], r.xlim[1]) == (5.0, 15.0)
+    xs = r.curves[0].xs
+    assert abs(xs[0] - 5.0) < 1e-9 and abs(xs[-1] - 15.0) < 1e-9
+    assert r is not old_r                        # данные действительно новые
+
+
+def test_view_recompute_asymptotes_in_view(qapp, isolated_settings):
+    """При зуме асимптоты пересчитываются в пределах нового вида."""
+    from quantor.gui.plot_window import PlotDialog
+
+    win = PlotDialog(None, CalculatorEngine("RAD"))
+    win.funcs_edit.setPlainText("tan(x)")
+    win._plot_current()
+    ax = win.figure.axes[0]
+    assert any(p < 0 for p in win._result.v_positions)
+    ax.set_xlim(2.0, 6.0)
+    win._refresh_view()
+    positions = win._result.v_positions
+    assert positions and all(2.0 <= p <= 6.0 for p in positions)
+    assert any(abs(p - 4.71238) < 0.01 for p in positions)
+
+
+def test_view_recompute_meshes(qapp, isolated_settings):
+    """Неявные тоже перерисовываются под новый вид."""
+    from quantor.gui.plot_window import PlotDialog
+
+    win = PlotDialog(None, CalculatorEngine("RAD"))
+    win.funcs_edit.setPlainText("x^2+y^2=25")
+    win._plot_current()
+    ax = win.figure.axes[0]
+    ax.set_xlim(-20.0, 20.0)
+    win._refresh_view()
+    m = win._result.meshes[0]
+    assert abs(m.X.min() + 20.0) < 1e-6 and abs(m.X.max() - 20.0) < 1e-6
+
+
+def test_refresh_skips_same_view_and_deep_zoom(qapp, isolated_settings):
+    """Без изменения вида и при сверхглубоком зуме перерасчёт не тратится."""
+    import numpy as _np
+    from quantor.gui.plot_window import PlotDialog
+
+    win = PlotDialog(None, CalculatorEngine("RAD"))
+    win.funcs_edit.setPlainText("1/x")
+    win._plot_current()
+    first = win._result
+    win._refresh_view()
+    assert win._result is first                  # вид не менялся — пропуск
+
+    ax = win.figure.axes[0]
+    ax.set_xlim(1.0, 1.0 + 1e-11)                # сверхглубокий зум
+    win._refresh_view()
+    assert win._result is first
+
+
+def test_draw_event_starts_timer(qapp, isolated_settings):
+    """Событие перерисовки с новыми границами запускает буферизацию."""
+    from quantor.gui.plot_window import PlotDialog
+
+    win = PlotDialog(None, CalculatorEngine("RAD"))
+    win.funcs_edit.setPlainText("sin(x)")
+    win._plot_current()
+    win.figure.axes[0].set_xlim(0.0, 4.0)
+    assert not win._nav_timer.isActive()
+    win._on_draw_event()
+    assert win._nav_timer.isActive()
+    win.nav_timer_stop()
+
+
 def test_plot_window_error_status(qapp, isolated_settings):
     from quantor.engine import CalculatorEngine
     from quantor.gui.plot_window import PlotDialog

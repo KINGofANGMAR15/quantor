@@ -88,6 +88,7 @@ class PlotResult:
     meshes: List[ImplicitMesh] = field(default_factory=list)
     xlabel: str = "x"
     ylabel: str = "y"
+    xlim: Tuple[float, float] = (-10.0, 10.0)   # фактический диапазон выборки
     ylim: Tuple[float, float] = (-1.0, 1.0)
     #: Подписи асимптот (все функции, без повторов)
     asymptote_texts: List[str] = field(default_factory=list)
@@ -578,6 +579,8 @@ def plot_data(text: str, engine: CalculatorEngine, var: str = "x",
         x0, x1 = default_range(engine, fexprs)
         if not fexprs:
             x0, x1 = -10.0, 10.0
+    if x1 <= x0:
+        x0, x1 = float(x1), float(x0)
 
     has_trig = _has_trig([s["expr"] for s in specs])
     unit = "градусы" if engine.angle_mode == "DEG" else "радианы"
@@ -615,6 +618,7 @@ def plot_data(text: str, engine: CalculatorEngine, var: str = "x",
         color_i += 1
 
     result.v_positions = result.v_positions[:200]
+    result.xlim = (float(x0), float(x1))
     if y0 is not None and y1 is not None and y0 < y1:
         result.ylim = (float(y0), float(y1))
     elif result.meshes and mesh_ylim is not None:

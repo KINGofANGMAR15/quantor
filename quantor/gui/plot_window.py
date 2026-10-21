@@ -10,11 +10,11 @@
 
 from __future__ import annotations
 
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 import matplotlib
 import numpy as np
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QDialog, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
     QPlainTextEdit, QPushButton, QVBoxLayout,
@@ -41,6 +41,9 @@ _AXIS_COLOR = "#1a1a1a"
 _ASYM_COLOR = "#5f6368"
 _MASK_KINDS = {"lt": lambda z: z < 0, "le": lambda z: z <= 0,
                "gt": lambda z: z > 0, "ge": lambda z: z >= 0}
+
+#: Пауза перед перерасчётом данных под новый вид, мс
+NAV_DEBOUNCE_MS = 250
 
 
 class PlotDialog(QDialog):
@@ -119,6 +122,19 @@ class PlotDialog(QDialog):
         buttons.addWidget(close)
         layout.addLayout(buttons)
 
+        # Пересчёт содержимого при перемещении вида (панорама/зум): после буферизации
+        # паузы перестраиваем данные под текущие границы — иначе за пределами
+        # исходного диапазона кривая просто обрывается.
+        self._result = None          # type: Optional[Any]
+        self._text = ""              # разобранный текст для перерасчёта
+        self._var = "x"
+        self._in_render = False
+        self._nav_timer = QTimer(self)
+        self._nav_timer.setSingleShot(True)
+        self._nav_timer.setInterval(NAV_DEBOUNCE_MS)
+        self._nav_timer.timeout.connect(self._refresh_view)
+        self.canvas.mpl_connect("draw_event", self._on_draw_event)
+
         self._load_state()
         self._plot_current()
 
@@ -145,23 +161,87 @@ class PlotDialog(QDialog):
             )
         except (PlotError, CalculatorError, ValueError) as exc:
             self.status.setText(f"Ошибка: {exc}")
+            self._result = None
             return
         except Exception as exc:  # защита: окно не должно падать
             self.status.setText(f"Внутренняя ошибка: {exc.__class__.__name__}")
+            self._result = None
             return
+        self._text = self.funcs_edit.toPlainText()
+        self._var = var
+        self.nav_timer_stop()
+        self._render(result, save=True)
 
-        self.figure.clear()
-        ax = self.figure.add_subplot(111)
-        self._draw_curves(ax, result)
-        self._draw_implicit(ax, result)
-        self._draw_asymptotes(ax, result)
-        ax.set_xlabel(result.xlabel)
-        ax.set_ylabel("y")
-        ax.set_ylim(*result.ylim)
-        ax.grid(True, alpha=0.35, linewidth=0.6)
-        self._style_axes(ax)
-        self._legend_handles(ax, result)
-        self.canvas.draw_idle()
+    # ------------------------------------------------------------- рисование
+    def nav_timer_stop(self) -> None:
+        if self._nav_timer.isActive():
+            self._nav_timer.stop()
+
+    def _on_draw_event(self, event=None) -> None:
+        """Если границы вида изменились — отложенно пересчитать содержимое."""
+        if self._in_render or self._result is None:
+            return
+        if not self.figure.axes:
+            return
+        ax = self.figure.axes[0]
+        lo, hi = ax.get_xlim()
+        vlo, vhi = ax.get_ylim()
+        x0, x1 = self._result.xlim
+        y0, y1 = self._result.ylim
+        same = (abs(lo - x0) < 1e-12 and abs(hi - x1) < 1e-12
+                and abs(vlo - y0) < 1e-12 and abs(vhi - y1) < 1e-12)
+        if not same:
+            self._nav_timer.start()
+
+    def _refresh_view(self) -> None:
+        """Построить данные под текущие границы окна (после панорамы/зума)."""
+        self.nav_timer_stop()
+        result = self._result
+        if result is None or not self.figure.axes:
+            return
+        ax = self.figure.axes[0]
+        lo, hi = ax.get_xlim()
+        ylo, yhi = ax.get_ylim()
+        vals = (float(lo), float(hi), float(ylo), float(yhi))
+        if not all(np.isfinite(vals)) or hi <= lo or yhi <= ylo:
+            return
+        if (hi - lo) < 1e-9:                      # слишком глубокий зум
+            return
+        if (abs(lo - result.xlim[0]) < 1e-12
+                and abs(hi - result.xlim[1]) < 1e-12
+                and abs(ylo - result.ylim[0]) < 1e-12
+                and abs(yhi - result.ylim[1]) < 1e-12):
+            return                                # вид не менялся
+        try:
+            fresh = plot_data(self._text, self.engine, self._var,
+                              x0=lo, x1=hi, y0=ylo, y1=yhi)
+        except Exception:
+            return                                # остаётся старая картинка
+        # границы могли слегка округлиться — фиксируем вид заново
+        fresh.xlim = (float(lo), float(hi))
+        fresh.ylim = (float(ylo), float(yhi))
+        self._result = fresh                      # до отрисовки: событие draw
+        self._render(fresh, save=False)
+
+    def _render(self, result, save: bool) -> None:
+        self._result = result
+        self._in_render = True
+        try:
+            self.figure.clear()
+            ax = self.figure.add_subplot(111)
+            self._draw_curves(ax, result)
+            self._draw_implicit(ax, result)
+            self._draw_asymptotes(ax, result)
+            ax.set_xlabel(result.xlabel)
+            ax.set_ylabel("y")
+            ax.set_xlim(*result.xlim)
+            ax.set_ylim(*result.ylim)
+            ax.grid(True, alpha=0.35, linewidth=0.6)
+            self._style_axes(ax)
+            self._legend_handles(ax, result)
+            self.canvas.draw_idle()
+        finally:
+            self._in_render = False
 
         notes: List[str] = []
         if result.breaks:
@@ -170,9 +250,8 @@ class PlotDialog(QDialog):
         if result.asymptote_texts:
             notes.append("Асимптоты: " + "; ".join(result.asymptote_texts))
         self.status.setText("\n".join(notes))
-        self._save_state()
-
-    # ------------------------------------------------------------- рисование
+        if save:
+            self._save_state()
     @staticmethod
     def _draw_curves(ax, result) -> None:
         for c in result.curves:
@@ -262,6 +341,8 @@ class PlotDialog(QDialog):
                 self.status.setText(f"Не удалось сохранить: {exc}")
 
     def _reset(self) -> None:
+        self.nav_timer_stop()
+        self._result = None
         self.funcs_edit.setPlainText("")
         for e in (self.x0_edit, self.x1_edit, self.y0_edit, self.y1_edit):
             e.clear()
