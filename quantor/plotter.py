@@ -176,7 +176,8 @@ def parse_lines(text: str, engine: CalculatorEngine, var: str = "x",
         except PlotError:
             raise
         except (CalculatorError, LatexParseError) as exc:
-            raise PlotError(f"Строка {i}: не удалось разобрать выражение") from exc
+            raise PlotError(f"Строка {i}: не удалось разобрать "
+                            f"выражение ({exc})") from exc
         if op is None:
             extra = expr.free_symbols - {sym_x}
             if extra:

@@ -504,6 +504,55 @@ def _bind_sqrt(text: str) -> str:
     return "".join(parts)
 
 
+def _bind_log_base(text: str) -> str:
+    """Привычная запись log_2 → двухаргументный log(аргумент, 2).
+
+    Поддерживается и обычный текст, и кнопки: log_2(x) → log(x, 2),
+    log_2 16 → log(16, 2), log_2 x^2 → log(x**2, 2) (как в учебниках:
+    основание связывается с «атомом», показатель аргумента входит в него).
+    """
+    out: List[str] = []
+    i = 0
+    n = len(text)
+    pat = re.compile(r"log_([0-9]+|[a-zA-Z])(?![a-zA-Z0-9])", re.IGNORECASE)
+    while True:
+        m = pat.search(text, i)
+        if not m:
+            out.append(text[i:])
+            return "".join(out)
+        base = m.group(1)
+        out.append(text[i:m.start()] + "log(")
+        k = m.end()
+        while k < n and text[k].isspace():    # «log_2 x», «log_2 16» — с пробелом
+            k += 1
+        if k <= n and k < n and text[k] == "(":  # log_2( x ) — скобочный аргумент
+            depth = 1
+            k += 1
+            while k < n and depth:
+                if text[k] == "(":
+                    depth += 1
+                elif text[k] == ")":
+                    depth -= 1
+                k += 1
+            # k — за закрывающей скобкой аргумента
+            out.append(text[m.end() + 1:k - 1] + f", {base})")
+            i = k
+            continue
+        end = _match_primary_end(text, k)
+        if end is None:                       # после основания нет аргумента
+            raise MathParseError(
+                f"После log_{base} нужен аргумент: "
+                f"log_{base}(x) или log_{base} x")
+        # показатель аргумента входит в log (log_2 x^2 = log_2(x^2))
+        while end < n and text.startswith("**", end):
+            nxt = _match_primary_end(text, end + 2)
+            if nxt is None:
+                break
+            end = nxt
+        out.append(text[k:end] + f", {base})")
+        i = end
+
+
 def _preprocess(text: str) -> str:
     """Кнопочные/типографские символы -> синтаксис безопасного парсера."""
     for bad, good in (("×", "*"), ("·", "*"), ("÷", "/"), ("−", "-"),
@@ -512,6 +561,7 @@ def _preprocess(text: str) -> str:
         text = text.replace(bad, good)
     text = text.replace("^", "**")
     text = _bind_sqrt(text)
+    text = _bind_log_base(text)
     # Дописываем недостающие закрывающие скобки (как на Casio при «=»).
     opened = text.count("(") - text.count(")")
     if opened > 0:
@@ -599,7 +649,10 @@ class CalculatorEngine:
         Все пути пользовательского ввода (калькулятор, уравнения,
         неравенства, графики, текстовый ввод без LaTeX) проходят здесь.
         """
-        cleaned = _preprocess(text)
+        try:
+            cleaned = _preprocess(text)
+        except MathParseError as exc:
+            raise CalculatorError(str(exc)) from exc
         if not cleaned:
             raise CalculatorError("Пустой ввод")
         try:

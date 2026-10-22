@@ -55,6 +55,31 @@ def test_logs(engine):
     assert engine.calculate("log(8,2)")[1] == pytest.approx(3.0)  # произвольное основание
 
 
+# ------------------------------ log_2: основание подчёркиванием (обычный текст)
+def test_log_subscript_plain_text(engine):
+    """log_2 8 == 3, log_10 1000 == 3, log_25 625 == 2 — запись как в учебниках."""
+    assert engine.calculate("log_2 8")[1] == pytest.approx(3.0)
+    assert engine.calculate("log_10 1000")[1] == pytest.approx(3.0)
+    assert engine.calculate("log_25 625")[1] == pytest.approx(2.0)
+    assert engine.calculate("log_2(8)")[1] == pytest.approx(3.0)
+    assert engine.calculate("2*log_2 8")[1] == pytest.approx(6.0)
+    assert engine.calculate("log_2 8 - log_3 27")[1] == pytest.approx(0.0)
+    assert engine.calculate("log_2 2^10")[1] == pytest.approx(10.0)  # показатель входит в аргумент
+
+
+def test_log_subscript_missing_arg(engine):
+    with pytest.raises(CalculatorError, match="log_2"):
+        engine.calculate("log_2")
+    with pytest.raises(CalculatorError, match="log_7"):
+        engine.calculate("log_7+")
+
+
+def test_log_subscript_equation(engine):
+    assert engine.solve_equation("log_2 x = 10") == [1024]
+    assert engine.solve_equation("log_2(2x-1) = 5") == [16.5]
+    assert engine.solve_equation("2*log_2 8 + x = 10") == [4]
+
+
 def test_constants(engine):
     assert engine.calculate("C")[1] == 299792458.0
     assert engine.calculate("h")[1] == pytest.approx(6.62607015e-34)

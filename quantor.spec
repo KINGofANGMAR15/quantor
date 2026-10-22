@@ -5,12 +5,22 @@
 #
 # Tkinter (tcl/tk DLL и библиотеки) PyInstaller упаковывает автоматически.
 
+from PyInstaller.utils.hooks import collect_submodules
+
 a = Analysis(
     ['quantor/__main__.py'],
     pathex=[],
     binaries=[],
     datas=[],
-    hiddenimports=[],
+    # LaTeX-парсер sympy подключается во время выполнения (динамические
+    # импорты), PyInstaller их не видит — перечисляем явно. antlr4-python3-runtime
+    # обязателен для sympy.parsing.latex (см. requirements.txt).
+    hiddenimports=collect_submodules('antlr4') + [
+        'sympy.parsing.latex',
+        'sympy.parsing.latex._parse_latex_antlr',
+        'sympy.parsing.latex._antlr.latexparser',
+        'sympy.parsing.latex._antlr.latexlexer',
+    ],
     hookspath=[],
     runtime_hooks=[],
     # Qt WebEngine/Quick не нужны калькулятору — экономим ~200 МБ в бинарнике

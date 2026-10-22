@@ -75,6 +75,15 @@ def test_parse_latex_side(engine):
     assert sp.simplify(exprs[0] - sp.sin(sp.Symbol("x")) / 2) == 0
 
 
+def test_parse_log_subscript(engine):
+    """Обычный текст «y=log_2 x» — основание подчёркиванием, как в учебниках."""
+    exprs = parse_functions("y=log_2 x", engine)
+    val = float(exprs[0].subs(sp.Symbol("x"), 8))
+    assert abs(val - 3.0) < 1e-12          # log2(8) = 3
+    exprs = parse_functions("log_2 16", engine)
+    assert abs(float(exprs[0]) - 4.0) < 1e-12
+
+
 # ---------------------------------------------------------------- выборка
 def test_sample_count_and_constant(engine):
     xs_sym = sp.Symbol("x")
