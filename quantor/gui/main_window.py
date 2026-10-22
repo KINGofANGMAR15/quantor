@@ -22,7 +22,7 @@ from ..calculus import CalculusEngine, is_calculus_query
 from ..engine import (
     ANGLE_MODES, CalculatorEngine, CalculatorError, INEQ_RE,
     _fmt_number, _exact_to_number, _format_solution_set, _guess_var,
-    format_exact,
+    format_exact, number_to_sympy,
 )
 from ..latex_input import (
     LatexParseError, is_latex, parse_input, render_latex, to_latex,
@@ -318,7 +318,7 @@ class MainWindow(QMainWindow):
         self.result.setProperty("err", False)
         self._style_refresh(self.result)
         self._set_result_preview(
-            to_latex(sp.sympify(value)) if value is not None else "")
+            to_latex(number_to_sympy(value)) if value is not None else "")
         self.input.setText(shown)
         self.input.setCursorPosition(len(shown))
 

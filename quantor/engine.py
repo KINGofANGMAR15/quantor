@@ -20,22 +20,15 @@ from typing import Any, Dict, List, Sequence, Tuple, Union
 
 import sympy as sp
 from sympy.core.relational import Relational
-from sympy.parsing.sympy_parser import (
-    implicit_multiplication_application,
-    parse_expr,
-    standard_transformations,
-)
 
 from . import constants as K
+from . import math_parser
+from .math_parser import MathParseError
 
 Number = Union[int, float, complex]
 Result = Tuple[str, Number]
 
 ANGLE_MODES = ("DEG", "RAD")
-
-#: Преобразования парсера: стандартные + неявное умножение ("2pi" -> 2*pi,
-#: "3(4+5)" -> 3*(4+5)) и неявное применение функций ("sin 30" -> sin(30)).
-_TRANSFORMS = standard_transformations + (implicit_multiplication_application,)
 
 # Точки старта для численного поиска корней nsolve (обычные уравнения).
 _NUM_STARTS = (-20.0, -10.0, -5.0, -2.0, -1.0, -0.5, 0.001,
@@ -192,7 +185,12 @@ def _exact_to_number(node: sp.Basic) -> Number:
         raise CalculatorError("Не заданы переменные: " + names)
     if getattr(node, "is_Integer", False):
         return int(node)
-    value = complex(sp.N(node, 15))
+    try:
+        value = complex(sp.N(node, 15))
+    except (OverflowError, ValueError, TypeError):
+        raise CalculatorError("Число слишком велико") from None
+    if not math.isfinite(value.real) or not math.isfinite(value.imag):
+        raise CalculatorError("Результат бесконечен")
     scale = max(1.0, abs(value.real), abs(value.imag))
     if abs(value.imag) <= 1e-11 * scale:
         return value.real
@@ -388,7 +386,7 @@ def _sort_roots(roots: Sequence[Number]) -> List[Number]:
 
 
 def _preprocess(text: str) -> str:
-    """Кнопочные/типографские символы -> синтаксис SymPy."""
+    """Кнопочные/типографские символы -> синтаксис безопасного парсера."""
     for bad, good in (("×", "*"), ("·", "*"), ("÷", "/"), ("−", "-"),
                       ("–", "-"), ("π", "pi"), ("²", "**2"), ("³", "**3"),
                       ("⁴", "**4"), ("√", "sqrt(")):
@@ -399,6 +397,19 @@ def _preprocess(text: str) -> str:
     if opened > 0:
         text += ")" * opened
     return text.strip()
+
+
+def number_to_sympy(value: Number) -> sp.Basic:
+    """Python-число (int/float/complex) -> объект SymPy без sympify.
+
+    Замена ``sp.sympify`` для уже вычисленных числовых результатов:
+    sympify предназначен для строк и небезопасен на недоверенном вводе.
+    """
+    if isinstance(value, complex):
+        return sp.Float(value.real) + sp.I * sp.Float(value.imag)
+    if isinstance(value, float):
+        return sp.Float(value)
+    return sp.Integer(value)
 
 
 # ---------------------------------------------------------------------------
@@ -463,16 +474,25 @@ class CalculatorEngine:
         return sp.Mod(a, b)
 
     def _parse(self, text: str, ns: Dict[str, Any]) -> sp.Basic:
+        """Безопасный разбор: ограниченная грамматика без eval (math_parser).
+
+        Все пути пользовательского ввода (калькулятор, уравнения,
+        неравенства, графики, текстовый ввод без LaTeX) проходят здесь.
+        """
         cleaned = _preprocess(text)
         if not cleaned:
             raise CalculatorError("Пустой ввод")
         try:
-            return parse_expr(cleaned, local_dict=ns,
-                              transformations=_TRANSFORMS, evaluate=True)
+            return math_parser.parse(cleaned, ns)
         except CalculatorError:
             raise
-        except Exception:
-            raise CalculatorError("Ошибка ввода")
+        except MathParseError as exc:
+            raise CalculatorError(str(exc)) from exc
+        except Exception as exc:
+            # ошибки вычисления переданных функций (неверное число
+            # аргументов, SympifyError и т.п.) — в понятный текст;
+            # CalculatorError перехвачен выше и пробрасывается как есть
+            raise CalculatorError("Ошибка ввода") from exc
 
     # --- основное вычисление ------------------------------------------------
     def calculate(self, expr: str) -> Result:
