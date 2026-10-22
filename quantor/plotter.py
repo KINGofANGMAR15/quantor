@@ -243,6 +243,16 @@ def default_range(engine: CalculatorEngine, exprs: Sequence[sp.Basic]
     return (-10.0, 10.0)
 
 
+def log_domain_floor(x1: float) -> float:
+    """Минимальный положительный x0 для лог-шкалы (4 декады до x1).
+
+    Лог-ось не содержит 0, поэтому границы типа «-10..10» поднимаются
+    до небольшого положительного значения.
+    """
+    v = float(x1) * 1e-4
+    return v if v > 1e-6 else 1e-6
+
+
 # ------------------------------------------------------------------- вычисление
 
 def _lambdify_table(engine: CalculatorEngine) -> Dict[str, Callable]:
@@ -296,13 +306,10 @@ def _break_mask(ys: np.ndarray) -> np.ndarray:
     return mask
 
 
-def sample_curve(expr: sp.Expr, sym: sp.Symbol, engine: CalculatorEngine,
-                 x0: float, x1: float, n: int = SAMPLES) -> np.ndarray:
-    """Выборка y(x); NaN в особых точках и вне области определения."""
+def _eval_curve(expr: sp.Expr, sym: sp.Symbol,
+                engine: CalculatorEngine, xs: np.ndarray) -> np.ndarray:
+    """Значения y(x) на готовой сетке; NaN в особых точках и вне области."""
     fun = _lambdify((sym,), expr, engine)
-    if x1 <= x0:
-        x0, x1 = x1, x0
-    xs = np.linspace(float(x0), float(x1), int(n))
     with np.errstate(all="ignore"):
         ys = fun(xs)
     ys = np.asarray(ys)
@@ -317,6 +324,19 @@ def sample_curve(expr: sp.Expr, sym: sp.Symbol, engine: CalculatorEngine,
         return ys
     ys[_break_mask(ys)] = np.nan
     return ys
+
+
+def sample_curve(expr: sp.Expr, sym: sp.Symbol, engine: CalculatorEngine,
+                 x0: float, x1: float, n: int = SAMPLES,
+                 log_sample: bool = False) -> np.ndarray:
+    """Выборка y(x) на равномерной (или логарифмической) сетке по x."""
+    if x1 <= x0:
+        x0, x1 = x1, x0
+    if log_sample and float(x0) > 0.0:
+        xs = np.logspace(math.log10(float(x0)), math.log10(float(x1)), int(n))
+    else:
+        xs = np.linspace(float(x0), float(x1), int(n))
+    return _eval_curve(expr, sym, engine, xs)
 
 
 def implicit_mesh(expr: sp.Basic, sym_x: sp.Symbol, sym_y: sp.Symbol,
@@ -569,8 +589,13 @@ def _oblique_text(k, b) -> str:
 def plot_data(text: str, engine: CalculatorEngine, var: str = "x",
               x0: Optional[float] = None, x1: Optional[float] = None,
               y0: Optional[float] = None, y1: Optional[float] = None,
-              n: int = SAMPLES, mesh_n: int = 300) -> PlotResult:
-    """Полный цикл: разбор -> выборка/сетка -> данные для отрисовки."""
+              n: int = SAMPLES, mesh_n: int = 300,
+              logx: bool = False, logy: bool = False) -> PlotResult:
+    """Полный цикл: разбор -> выборка/сетка -> данные для отрисовки.
+
+    logx / logy: логарифмические оси — границы без положительной части
+    поднимаются до log_domain_floor(); выборка кривых по лог-сетке.
+    """
     specs = parse_lines(text, engine, var)
     sym = sp.Symbol(var)
     sym_x, sym_y = sp.Symbol(var), sp.Symbol("y")
@@ -581,6 +606,11 @@ def plot_data(text: str, engine: CalculatorEngine, var: str = "x",
             x0, x1 = -10.0, 10.0
     if x1 <= x0:
         x0, x1 = float(x1), float(x0)
+    if logx:
+        if float(x0) <= 0.0:
+            x0 = log_domain_floor(float(x1))
+        if float(x1) <= float(x0):
+            x1 = float(x0) * 1e4      # защита от вырожденных границ
 
     has_trig = _has_trig([s["expr"] for s in specs])
     unit = "градусы" if engine.angle_mode == "DEG" else "радианы"
@@ -589,17 +619,25 @@ def plot_data(text: str, engine: CalculatorEngine, var: str = "x",
     mesh_xlim = (float(x0), float(x1))
     mesh_ylim: Optional[Tuple[float, float]] = None
     if y0 is not None and y1 is not None and y0 < y1:
+        if logy and float(y0) <= 0.0:
+            y0 = log_domain_floor(float(y1))
         mesh_ylim = (float(y0), float(y1))
     elif any(s["kind"] != "func" for s in specs):
         span = mesh_xlim[1] - mesh_xlim[0]
         mesh_ylim = (-span / 2.0, span / 2.0)      # по умолчанию — высота по x
+        if logy and mesh_ylim[0] <= 0.0:
+            mesh_ylim = (log_domain_floor(mesh_ylim[1]), mesh_ylim[1])
 
     color_i = 0
     for s in specs:
         kind = s["kind"]
         if kind == "func":
-            ys = sample_curve(s["expr"], sym, engine, x0, x1, n)
-            xs = np.linspace(float(x0), float(x1), n)
+            if logx and float(x0) > 0.0:
+                xs = np.logspace(math.log10(float(x0)),
+                                 math.log10(float(x1)), n)
+            else:
+                xs = np.linspace(float(x0), float(x1), n)
+            ys = _eval_curve(s["expr"], sym, engine, xs)
             info = analyze_asymptotes(s["expr"], sym, xs, ys,
                                       deg=engine.angle_mode == "DEG")
             result.curves.append(PlotCurve(s["label"], xs, ys,
@@ -625,5 +663,8 @@ def plot_data(text: str, engine: CalculatorEngine, var: str = "x",
         result.ylim = mesh_ylim
     else:
         result.ylim = _ylimits([c.ys for c in result.curves], y0, y1)
+        if logy and result.ylim[0] <= 0.0:
+            hi_y = max(float(result.ylim[1]), 1e-3)
+            result.ylim = (log_domain_floor(hi_y), hi_y)
     result.breaks = int(sum(int(np.isnan(c.ys).sum()) for c in result.curves))
     return result

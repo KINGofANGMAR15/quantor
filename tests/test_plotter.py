@@ -253,6 +253,46 @@ def test_plot_data_mixed(engine):
     assert r.ylim == (-5.0, 5.0)                  # высота по полной ширине x
 
 
+# ---------------------------------------------------------------- лог-шкала
+def test_plot_data_logx_samples_logspace(engine):
+    """Лог-ось X: выборка по лог-сетке, только положительные x."""
+    r = plot_data("log(x)", engine, logx=True)
+    assert r.xlim[0] > 0
+    c = r.curves[0]
+    assert (c.xs > 0).all()
+    assert np.all(np.diff(c.xs) > 0)              # возрастающая сетка
+    step = np.log10(c.xs[1:] / c.xs[:-1])
+    assert np.allclose(step, step[0])             # равномерно в декадах
+
+
+def test_plot_data_logx_clamps_negative_range(engine):
+    """Границы, содержащие 0/минус, поднимаются до log_domain_floor."""
+    from quantor.plotter import log_domain_floor
+    r = plot_data("log(x)", engine, x0=-5, x1=10, logx=True)
+    assert r.xlim[0] == pytest.approx(log_domain_floor(10.0))
+    assert r.xlim[1] == pytest.approx(10.0)
+
+
+def test_plot_data_logy_clamps_ylim(engine):
+    """Кривая, пересекающая y=0, на лог-оси Y получает положительный низ."""
+    r = plot_data("x-5", engine, x0=0, x1=10, logy=True)
+    assert r.ylim[0] > 0
+    assert r.ylim[1] > r.ylim[0]
+    # вся кривая в минусах: ось всё равно остаётся валидной
+    r2 = plot_data("x-100", engine, x0=0, x1=10, logy=True)
+    assert r2.ylim[0] > 0 and r2.ylim[1] > r2.ylim[0]
+
+
+def test_plot_data_logx_mixed_with_implicit(engine):
+    """Неявные кривые тоже строятся на лог-осях (x*y=1 — гипербола)."""
+    r = plot_data("x^2\nx*y=1", engine, x0=0.1, x1=10,
+                  y0=0.1, y1=10, logx=True, logy=True)
+    assert len(r.curves) == 1 and len(r.meshes) == 1
+    m = r.meshes[0]
+    assert (m.X > 0).all() and (m.Y > 0).all()
+    assert r.xlim[0] > 0 and r.ylim[0] > 0
+
+
 # -------------------------------------------------------------------- GUI
 def test_plot_window_draws(qapp, isolated_settings):
     from quantor.engine import CalculatorEngine
@@ -397,6 +437,31 @@ def test_plot_window_error_status(qapp, isolated_settings):
     win._plot_current()
     assert "Ошибка" in win.status.text()
     assert len(win.figure.axes[0].lines) > 0 or True  # окно не упало
+
+
+def test_plot_window_log_scale(qapp, isolated_settings):
+    """Чекбоксы log X / log Y: оси matplotlib в лог-шкале, состояние в настройках."""
+    from quantor import settings
+    from quantor.engine import CalculatorEngine
+    from quantor.gui.plot_window import PlotDialog
+
+    eng = CalculatorEngine("DEG")
+    win = PlotDialog(None, eng)
+    win.funcs_edit.setPlainText("x^2")
+    win.logx_cb.setChecked(True)
+    win.logy_cb.setChecked(True)
+    win._plot_current()
+    ax = win.figure.axes[0]
+    assert ax.get_xscale() == "log"
+    assert ax.get_yscale() == "log"
+    assert ax.get_xlim()[0] > 0
+    saved = settings.load_settings()
+    assert saved["plot_logx"] is True and saved["plot_logy"] is True
+    win.logx_cb.setChecked(False)
+    win._plot_current()
+    assert win.figure.axes[0].get_xscale() == "linear"
+    win._reset()
+    assert not settings.load_settings()["plot_logy"]
 
 
 def test_main_window_opens_plot_once(qapp, isolated_settings):

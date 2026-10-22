@@ -16,8 +16,8 @@ import matplotlib
 import numpy as np
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
-    QDialog, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPlainTextEdit, QPushButton, QVBoxLayout,
+    QCheckBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout, QLabel,
+    QLineEdit, QPlainTextEdit, QPushButton, QVBoxLayout,
 )
 
 # Бэкенд выбирается до каких-либо отрисовок; PySide6 уже загружен,
@@ -83,6 +83,19 @@ class PlotDialog(QDialog):
         rng.addWidget(self.y1_edit)
         rng.addStretch(1)
         form.addRow("Диапазон:", rng)
+
+        self.logx_cb = QCheckBox("лог. X")
+        self.logx_cb.setToolTip(
+            "Логарифмическая шкала по X: границы без положительной части\n"
+            "поднимаются до 10⁻⁴·x₁")
+        self.logy_cb = QCheckBox("лог. Y")
+        self.logy_cb.setToolTip("Логарифмическая шкала по Y")
+        scale_row = QHBoxLayout()
+        scale_row.addWidget(self.logx_cb)
+        scale_row.addWidget(self.logy_cb)
+        scale_row.addStretch(1)
+        form.addRow("Шкала:", scale_row)
+
         form.addRow("Переменная:", self.var_edit)
         layout.addLayout(form)
 
@@ -132,6 +145,8 @@ class PlotDialog(QDialog):
         self._nav_timer.setInterval(NAV_DEBOUNCE_MS)
         self._nav_timer.timeout.connect(self._refresh_view)
         self.canvas.mpl_connect("draw_event", self._on_draw_event)
+        self.logx_cb.toggled.connect(self._plot_current)
+        self.logy_cb.toggled.connect(self._plot_current)
 
         self._load_state()
         self._plot_current()
@@ -149,6 +164,8 @@ class PlotDialog(QDialog):
     def _plot_current(self) -> None:
         self.status.setText("")
         var = (self.var_edit.text().strip() or "x")[:8]
+        logx = self.logx_cb.isChecked()
+        requested_x0 = self._opt_float(self.x0_edit)
         try:
             result = plot_data(
                 self.funcs_edit.toPlainText(), self.engine, var,
@@ -156,6 +173,7 @@ class PlotDialog(QDialog):
                 x1=self._opt_float(self.x1_edit),
                 y0=self._opt_float(self.y0_edit),
                 y1=self._opt_float(self.y1_edit),
+                logx=logx, logy=self.logy_cb.isChecked(),
             )
         except (PlotError, CalculatorError, ValueError) as exc:
             self.status.setText(f"Ошибка: {exc}")
@@ -169,6 +187,10 @@ class PlotDialog(QDialog):
         self._var = var
         self.nav_timer_stop()
         self._render(result, save=True)
+        if logx and (requested_x0 is None or requested_x0 <= 0):
+            self.status.setText(self.status.text()
+                                + f"\nЛог-шкала X: диапазон от "
+                                  f"{result.xlim[0]:g} (лог-ось не содержит 0)")
 
     # ------------------------------------------------------------- рисование
     def nav_timer_stop(self) -> None:
@@ -212,7 +234,9 @@ class PlotDialog(QDialog):
             return                                # вид не менялся
         try:
             fresh = plot_data(self._text, self.engine, self._var,
-                              x0=lo, x1=hi, y0=ylo, y1=yhi)
+                              x0=lo, x1=hi, y0=ylo, y1=yhi,
+                              logx=self.logx_cb.isChecked(),
+                              logy=self.logy_cb.isChecked())
         except Exception:
             return                                # остаётся старая картинка
         # границы могли слегка округлиться — фиксируем вид заново
@@ -230,6 +254,10 @@ class PlotDialog(QDialog):
             self.figure.set_facecolor(st["fig_face"])
             ax = self.figure.add_subplot(111)
             ax.set_facecolor(st["axes_face"])
+            if self.logx_cb.isChecked():          # до отрисовки данных
+                ax.set_xscale("log")
+            if self.logy_cb.isChecked():
+                ax.set_yscale("log")
             self._draw_curves(ax, result)
             self._draw_implicit(ax, result)
             self._draw_asymptotes(ax, result)
@@ -357,6 +385,10 @@ class PlotDialog(QDialog):
         self.funcs_edit.setPlainText("")
         for e in (self.x0_edit, self.x1_edit, self.y0_edit, self.y1_edit):
             e.clear()
+        for cb in (self.logx_cb, self.logy_cb):
+            cb.blockSignals(True)
+            cb.setChecked(False)
+            cb.blockSignals(False)
         st = theme.plot_style(theme.current())
         self.figure.clear()
         self.figure.set_facecolor(st["fig_face"])
@@ -375,6 +407,8 @@ class PlotDialog(QDialog):
         s["plot_x1"] = self.x1_edit.text()
         s["plot_y0"] = self.y0_edit.text()
         s["plot_y1"] = self.y1_edit.text()
+        s["plot_logx"] = self.logx_cb.isChecked()
+        s["plot_logy"] = self.logy_cb.isChecked()
         save_settings(s)
 
     def _load_state(self) -> None:
@@ -391,3 +425,9 @@ class PlotDialog(QDialog):
             val = s.get(key)
             if isinstance(val, str):
                 edit.setText(val)
+        # переключение чекбоксов влечёт _plot_current: при загрузке без сигналов
+        for key, cb in (("plot_logx", self.logx_cb),
+                        ("plot_logy", self.logy_cb)):
+            cb.blockSignals(True)
+            cb.setChecked(bool(s.get(key)))
+            cb.blockSignals(False)
