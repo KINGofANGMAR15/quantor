@@ -61,6 +61,10 @@ class PlotDialog(QDialog):
         self.funcs_edit.setPlaceholderText(
             _FUNC_PLACEHOLDER + "\n\nодна функция на строку, до "
             f"{MAX_FUNCTIONS} штук")
+        self.funcs_edit.setToolTip(
+            "Записи возможны обычные и LaTeX:\n"
+            "sin(x) · x^2+y^2=25 · x^2+y^2<16\n"
+            "\\log_2 x · \\frac{\\sin(x)}{2} · y=e^{x}")
         self.funcs_edit.setFixedHeight(76)
         form.addRow("Функции:", self.funcs_edit)
 

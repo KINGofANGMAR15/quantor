@@ -45,6 +45,25 @@ INEQ_RE = re.compile(r"<=|>=|≤|≥|<|>")
 _INEQ_CONSTANT_LETTERS = {"e", "E"}
 
 
+#: Замены LaTeX-записей знаков и умножений на символьную запись.
+#: Порядок важен: \leq проверяется раньше \le; (?![a-zA-Z]) оберегает
+#: \left (не превратится в «<=ft》) и \log (\log не трогает).
+_LATEX_OPS: "re.Pattern[str]" = re.compile(
+    r"\\(leqslant|leq|le|geqslant|geq|ge|cdot|times|div)(?![a-zA-Z])")
+
+
+def _normalize_latex_ops(text: str) -> str:
+    """LaTeX-знаки -> обычные: «x^2-4 \\leq 0» == «x^2-4 <= 0».
+
+    Нужна ДО поиска знака: иначе строки с латексными неравенствами
+    падают с «знак не найден», не дойдя до LaTeX-парсера частей.
+    """
+    return _LATEX_OPS.sub(
+        lambda m: {"leqslant": "<=", "leq": "<=", "le": "<=",
+                   "geqslant": ">=", "geq": ">=", "ge": ">=",
+                   "cdot": "*", "times": "*", "div": "/"}[m.group(1)], text)
+
+
 def _guess_var(text: str) -> str:
     """Переменная неравенства по тексту: одиночные латинские буквы.
     Приоритет x, y, z, t, …; одиночные буквы-константы (e, E) пропускаем."""
@@ -672,8 +691,12 @@ class CalculatorEngine:
 
     # --- общие уравнения --------------------------------------------------------
     def solve_equation(self, eq: str, var: str = "x") -> List[Number]:
-        """Решить уравнение вида «LHS = RHS» (если RHS нет — считать 0)."""
-        eq = (eq or "").strip()
+        """Решить уравнение вида «LHS = RHS» (если RHS нет — считать 0).
+
+        Части разбираются и обычным синтаксисом (2^x = 8), и LaTeX
+        (\\log_2 x = 10, \\frac{x-1}{2} = 3) — как в тексте, так и LaTeX.
+        """
+        eq = _normalize_latex_ops((eq or "").strip())
         if eq.count("=") > 1:
             raise CalculatorError("Нужно ровно одно «=» (например: 2^x = 8)")
         if re.search(r"<=?|>=?|≤|≥", eq):
@@ -689,7 +712,9 @@ class CalculatorEngine:
               "abs": sp.Abs, "ln": sp.log, "log": self._logb}
         self._trig_into(ns)
         try:
-            left, right = self._parse(lhs, ns), self._parse(rhs, ns)
+            rename = None if var == "x" else {sp.Symbol("x"): sym}
+            left = self._parse_side(lhs, ns, rename)
+            right = self._parse_side(rhs, ns, rename)
         except CalculatorError as exc:
             raise CalculatorError(f"Ошибка ввода: {exc}") from exc
         # «x^2-4>0» вместо «=» — парсер вернёт отношение (Relational)
@@ -749,7 +774,7 @@ class CalculatorEngine:
         Правая часть может отсутствовать («x^2>1» -> «x^2>0»? нет:
         «x<0» означает «x < 0»). Знаки: <, >, <=, >=, ≤, ≥.
         """
-        text = (text or "").strip()
+        text = _normalize_latex_ops((text or "").strip())
         m = INEQ_RE.search(text)
         if not m:
             raise CalculatorError(
@@ -808,13 +833,28 @@ class CalculatorEngine:
         except Exception:
             raise CalculatorError("Не удалось решить неравенство")
 
-    def _parse_side(self, side: str, ns: Dict[str, Any]) -> sp.Basic:
-        """Разбор части неравенства: обычный ввод, при ошибке — LaTeX."""
+    def _parse_side(self, side: str, ns: Dict[str, Any],
+                    rename: Optional[Dict[sp.Symbol, sp.Symbol]] = None
+                    ) -> sp.Basic:
+        """Разбор части уравнения/неравенства: обычный ввод, при ошибке — LaTeX.
+
+        LaTeX-часть разбирается относительно «x»; если пользователь задал
+        другую переменную (var = "y", "t", …), символ x переименовывается.
+        """
         try:
-            return self._parse(side, ns)
+            expr = self._parse(side, ns)
         except CalculatorError:
             from .latex_input import parse_input  # локальный импорт (циклы)
-            return parse_input(side, self)
+            try:
+                expr = parse_input(side, self)
+            except Exception as exc:
+                # LatexParseError и прочее -> то же «Ошибка ввода», что и у
+                # обычного пути: одинаковый контракт ошибок во всех окнах
+                raise CalculatorError(str(exc) or "Не удалось разобрать"
+                                      ) from exc
+        if rename:
+            expr = expr.xreplace(rename)
+        return expr
 
     def solve_inequality(self, text: str, var: str = None) -> List[str]:
         """Решить неравенство. Возвращает список частей решения:

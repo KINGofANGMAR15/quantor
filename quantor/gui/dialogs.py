@@ -39,7 +39,11 @@ class EquationDialog(QDialog):
         form.setSpacing(10)
 
         self.eq_edit = QLineEdit("x^3-6x^2+11x-6=0")
-        form.addRow("Уравнение (2^x=8, x^2-4=0):", self.eq_edit)
+        self.eq_edit.setToolTip(
+            "Обычная запись: 2^x=8, x^2-4=0. LaTeX тоже: \\log_2 x = 10, "
+            "\\frac{x-1}{2} = 5")
+        form.addRow("Уравнение (текст или LaTeX, 2^x=8, \\log_2 x=10):",
+                    self.eq_edit)
 
         self.mode_eq = QRadioButton("Уравнение (текстом)")
         self.mode_poly = QRadioButton("Полином, коэффициенты по убыванию степеней:")
@@ -155,7 +159,9 @@ class InequalityDialog(QDialog):
         hint = QLabel(
             "Поддерживаются полиномы степени 1–4: x^2-4<0, "
             "x^3-6x^2+11x-6>=0, 0.5x<2.\n"
-            "Знаки: <, >, <=, >=, ≤, ≥. Правую часть можно опустить (x<0).")
+            "Знаки: <, >, <=, >=, ≤, ≥, а также \\leq и \\ge.\n"
+            "Правую часть можно опустить (x<0); части можно писать LaTeX'ом: "
+            "\\frac{x-1}{2} <= 0.")
         hint.setObjectName("cap")
         hint.setWordWrap(True)
         layout.addWidget(hint)

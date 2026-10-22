@@ -54,6 +54,30 @@ def test_bad_syntax(engine):
         engine.solve_equation("x^2=")
 
 
+# ------------------------------------------- LaTeX-ввод (кнопки 1.7: \log, \frac)
+def test_solve_equation_latex(engine):
+    """LaTeX-запись уравнения: \log_2, \frac, 2^{x}, \cdot."""
+    assert engine.solve_equation(r"\log_2 x = 10") == [1024]
+    assert engine.solve_equation(r"\log_{2}x - 3 = 0") == [8]
+    assert engine.solve_equation(r"\frac{x}{2} = 8") == [16]
+    assert engine.solve_equation(r"2^{x} = 8") == [3]
+    assert engine.solve_equation(r"x \cdot 2 = 10") == [5]
+
+
+def test_solve_equation_latex_var_rename(engine):
+    """LaTeX всегда про «x», а в диалоге может быть var = «y»: подстановка."""
+    assert engine.solve_equation(r"2 \cdot x = 5", var="y") == [2.5]
+    assert engine.solve_equation(r"2 \cdot y = 5", var="y") == [2.5]
+
+
+def test_solve_equation_latex_bad_syntax_is_calculator_error(engine):
+    r"""LaTeX-путь не меняет контракт ошибок: класс CalculatorError."""
+    with pytest.raises(CalculatorError):
+        engine.solve_equation(r"\frac{x}{ = 0")
+    with pytest.raises(CalculatorError):
+        engine.solve_equation(r"\log_2 = 8")       # неизвестной нет -> «Нет решений»
+
+
 # ------------------------------------------- adversarial 2026-10: предел степени
 def test_dense_high_degree_equation_rejected(engine):
     """sp.solve на плотном полиноме 10-й степени = 12.3 с, 15+ — зависание."""

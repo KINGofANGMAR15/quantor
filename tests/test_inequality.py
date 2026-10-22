@@ -95,6 +95,16 @@ def test_latex_sides_fallback(engine):
     assert parts == ["x ≤ 2"]
 
 
+def test_latex_inequality_signs(engine):
+    r"""LaTeX-знаки неравенств: \leq, \geq (и \le/\leqslant)."""
+    assert engine.solve_inequality(r"\frac{x - 1}{2} + 1 \leq 0") == ["x ≤ -1"]
+    assert engine.solve_inequality(r"x^2 - 4 \geq 0") == ["x ≤ -2 или x ≥ 2"]
+    assert engine.solve_inequality(r"x + 1 \leqslant 3") == ["x ≤ 2"]
+    # LaTeX-знаки не бьют по \left при нормализации (\left не «\le …»)
+    r = engine.solve_inequality(r"\frac{x}{2} - 1 \ge 0")
+    assert r == ["x ≥ 2"]
+
+
 # ------------------------------------------------------------------------ GUI
 def test_inequality_dialog(qapp):
     from quantor.gui.dialogs import InequalityDialog
