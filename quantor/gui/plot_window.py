@@ -14,7 +14,7 @@ from typing import Any, List, Optional, Tuple
 
 import matplotlib
 import numpy as np
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
     QDialog, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
     QPlainTextEdit, QPushButton, QVBoxLayout,
@@ -32,13 +32,10 @@ from matplotlib.patches import Patch                                 # noqa: E40
 
 from ..engine import CalculatorEngine, CalculatorError
 from ..plotter import MAX_FUNCTIONS, PlotError, plot_data
+from . import theme
 
 _FUNC_PLACEHOLDER = "sin(x)\nx^2+y^2=25\nx^2+y^2<16"
 
-#: Цвет осей и засечек (яркий тёмный под светлую тему)
-_AXIS_COLOR = "#1a1a1a"
-#: Цвет линий асимптот
-_ASYM_COLOR = "#5f6368"
 _MASK_KINDS = {"lt": lambda z: z < 0, "le": lambda z: z <= 0,
                "gt": lambda z: z > 0, "ge": lambda z: z >= 0}
 
@@ -101,6 +98,7 @@ class PlotDialog(QDialog):
         layout.addWidget(self.nav)
 
         self.status = QLabel("")
+        self.status.setObjectName("status")
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
 
@@ -226,9 +224,12 @@ class PlotDialog(QDialog):
     def _render(self, result, save: bool) -> None:
         self._result = result
         self._in_render = True
+        st = theme.plot_style(theme.current())
         try:
             self.figure.clear()
+            self.figure.set_facecolor(st["fig_face"])
             ax = self.figure.add_subplot(111)
+            ax.set_facecolor(st["axes_face"])
             self._draw_curves(ax, result)
             self._draw_implicit(ax, result)
             self._draw_asymptotes(ax, result)
@@ -236,7 +237,8 @@ class PlotDialog(QDialog):
             ax.set_ylabel("y")
             ax.set_xlim(*result.xlim)
             ax.set_ylim(*result.ylim)
-            ax.grid(True, alpha=0.35, linewidth=0.6)
+            ax.grid(True, alpha=st["grid_alpha"], linewidth=0.6,
+                    color=st["grid_color"])
             self._style_axes(ax)
             self._legend_handles(ax, result)
             self.canvas.draw_idle()
@@ -279,40 +281,43 @@ class PlotDialog(QDialog):
     @staticmethod
     def _draw_asymptotes(ax, result) -> None:
         """Штриховые линии по найденным асимптотам."""
+        st = theme.plot_style(theme.current())
+        color = st["asym_color"]
+        kw = dict(color=color, ls=(0, (4, 3)), lw=1.0, alpha=0.85, zorder=1.8)
         lo, hi = ax.get_xlim()
         for xp in result.v_positions:
             if lo < xp < hi:
-                ax.axvline(xp, color=_ASYM_COLOR, ls=(0, (4, 3)),
-                           lw=1.0, alpha=0.85, zorder=1.8)
+                ax.axvline(xp, **kw)
         for yp in result.h_values:
-            ax.axhline(yp, color=_ASYM_COLOR, ls=(0, (4, 3)),
-                       lw=1.0, alpha=0.85, zorder=1.8)
+            ax.axhline(yp, **kw)
         for k, b in result.o_lines:
-            ax.plot([lo, hi], [k * lo + b, k * hi + b],
-                    color=_ASYM_COLOR, ls=(0, (4, 3)), lw=1.0,
-                    alpha=0.85, zorder=1.8)
+            ax.plot([lo, hi], [k * lo + b, k * hi + b], **kw)
 
     @staticmethod
     def _style_axes(ax) -> None:
-        """Яркие оси: толстые левая/нижняя рамки + оси через начало координат."""
-        ax.spines["top"].set_color("#d0d4d9")
-        ax.spines["right"].set_color("#d0d4d9")
-        ax.spines["top"].set_linewidth(0.8)
-        ax.spines["right"].set_linewidth(0.8)
+        """Яркие оси: толстые левая/нижняя рамки + оси через начало координат.
+        Цвета — из активной темы gui.theme."""
+        st = theme.plot_style(theme.current())
+        for side in ("top", "right"):
+            ax.spines[side].set_color(st["spine_minor"])
+            ax.spines[side].set_linewidth(0.8)
         for side in ("left", "bottom"):
-            ax.spines[side].set_color(_AXIS_COLOR)
+            ax.spines[side].set_color(st["axis_color"])
             ax.spines[side].set_linewidth(1.8)
-        ax.tick_params(colors="#404040", labelcolor="#404040")
+        ax.tick_params(colors=st["tick_color"], labelcolor=st["tick_label"])
+        ax.xaxis.label.set_color(st["axis_label"])
+        ax.yaxis.label.set_color(st["axis_label"])
         lo, hi = ax.get_xlim()
         if lo <= 0 <= hi:
-            ax.axvline(0, color=_AXIS_COLOR, lw=1.4, zorder=1.9)
+            ax.axvline(0, color=st["axis_color"], lw=1.4, zorder=1.9)
         lo, hi = ax.get_ylim()
         if lo <= 0 <= hi:
-            ax.axhline(0, color=_AXIS_COLOR, lw=1.4, zorder=1.9)
+            ax.axhline(0, color=st["axis_color"], lw=1.4, zorder=1.9)
 
     @staticmethod
     def _legend_handles(ax, result) -> None:
         """Легенда по прокси-элементам (сам контур может ещё не иметь линий)."""
+        st = theme.plot_style(theme.current())
         handles = []
         for c in result.curves:
             handles.append(Line2D([], [], color=c.color, lw=1.6, label=c.label))
@@ -324,7 +329,11 @@ class PlotDialog(QDialog):
                 handles.append(Patch(facecolor=m.color, alpha=0.30,
                                      edgecolor=m.color, label=m.label))
         if len(handles) > 1:
-            ax.legend(handles=handles, loc="upper right", fontsize=8)
+            legend = ax.legend(handles=handles, loc="upper right", fontsize=8)
+            legend.get_frame().set_facecolor(st["legend_face"])
+            legend.get_frame().set_edgecolor(st["legend_edge"])
+            for text in legend.get_texts():
+                text.set_color(st["legend_text"])
 
     # ------------------------------------------------------------ прочее
     def _save_png(self) -> None:
@@ -335,7 +344,9 @@ class PlotDialog(QDialog):
             if not path.lower().endswith(".png"):
                 path += ".png"
             try:
-                self.figure.savefig(path, dpi=150, facecolor="white")
+                # WYSIWYG: экспортируем с теми же цветами темы, что на экране
+                self.figure.savefig(
+                    path, dpi=150, facecolor=self.figure.get_facecolor())
                 self.status.setText(f"Сохранено: {path}")
             except OSError as exc:
                 self.status.setText(f"Не удалось сохранить: {exc}")
@@ -346,8 +357,10 @@ class PlotDialog(QDialog):
         self.funcs_edit.setPlainText("")
         for e in (self.x0_edit, self.x1_edit, self.y0_edit, self.y1_edit):
             e.clear()
+        st = theme.plot_style(theme.current())
         self.figure.clear()
-        self.figure.add_subplot(111).grid(True, alpha=0.35)
+        self.figure.set_facecolor(st["fig_face"])
+        self.figure.add_subplot(111).set_facecolor(st["axes_face"])
         self.canvas.draw_idle()
         self.status.setText("")
         self._save_state()

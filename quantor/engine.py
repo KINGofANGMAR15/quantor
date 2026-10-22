@@ -418,13 +418,81 @@ def _sort_roots(roots: Sequence[Number]) -> List[Number]:
     return real + comp
 
 
+def _match_primary_end(text: str, k: int) -> "int | None":
+    """Конец первичного выражения, начинающегося с позиции k.
+
+    Нужно для √: корень связывается со следующим «атомом» (число, скобка,
+    имя функции со своим скобочным блоком), а не со всем хвостом строки.
+    """
+    n = len(text)
+    if k >= n:
+        return None
+    c = text[k]
+    if c == "(":                       # скобочный блок целиком
+        depth = 1
+        k += 1
+        while k < n and depth:
+            if text[k] == "(":
+                depth += 1
+            elif text[k] == ")":
+                depth -= 1
+            k += 1
+        return k
+    if c.isdigit() or c == ".":        # числовой литерал
+        while k < n and (text[k].isdigit() or text[k] == "."):
+            k += 1
+        return k
+    if c.isalpha() or c in "_π":       # имя функции/константы
+        while k < n and (text[k].isalnum() or text[k] in "_"):
+            k += 1
+        if k < n and text[k] == "(":   # её аргументный блок целиком
+            depth = 1
+            k += 1
+            while k < n and depth:
+                if text[k] == "(":
+                    depth += 1
+                elif text[k] == ")":
+                    depth -= 1
+                k += 1
+        return k
+    return None
+
+
+def _bind_sqrt(text: str) -> str:
+    """Каждый 'sqrt_' (из кнопочного √) получает свой закрывающий герметизатор.
+
+    √2 + 1/2 → sqrt(2) + 1/2, а не sqrt(2 + 1/2); √2×√8 → sqrt(2)*sqrt(8).
+    """
+    parts: List[str] = []
+    i = 0
+    while True:
+        j = text.find("sqrt_", i)
+        if j < 0:
+            parts.append(text[i:])
+            break
+        parts.append(text[i:j] + "sqrt(")
+        k = _match_primary_end(text, j + len("sqrt_"))
+        head = j + len("sqrt_")
+        if k is None:
+            # после √ ничего — скобку допишет общий автозакрыватель
+            i = head
+            continue
+        if text[head] == "(":
+            parts.append(text[head:k])     # блок уже закрыт своей скобкой
+        else:
+            parts.append(text[head:k] + ")")
+        i = k
+    return "".join(parts)
+
+
 def _preprocess(text: str) -> str:
     """Кнопочные/типографские символы -> синтаксис безопасного парсера."""
     for bad, good in (("×", "*"), ("·", "*"), ("÷", "/"), ("−", "-"),
                       ("–", "-"), ("π", "pi"), ("²", "**2"), ("³", "**3"),
-                      ("⁴", "**4"), ("√", "sqrt(")):
+                      ("⁴", "**4"), ("√", "sqrt_")):
         text = text.replace(bad, good)
     text = text.replace("^", "**")
+    text = _bind_sqrt(text)
     # Дописываем недостающие закрывающие скобки (как на Casio при «=»).
     opened = text.count("(") - text.count(")")
     if opened > 0:

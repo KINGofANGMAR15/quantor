@@ -97,6 +97,27 @@ def test_formatting(engine):
     assert engine.calculate("1/3")[0] == "1/3"
 
 
+def test_sqrt_binds_to_next_primary(engine):
+    """√ связывается со следующим первичным выражением, а не со всем хвостом.
+
+    Регрессия: '√2+1' считался как sqrt(2+1) = √3.
+    """
+    import math
+
+    cases = {
+        "√2 + 1/2": math.sqrt(2) + 0.5,
+        "√2+1": math.sqrt(2) + 1,
+        "√2×√8": 4.0,
+        "√(2+2)": 2.0,
+        "√2^2": 2.0,
+        "√pi": math.sqrt(math.pi),
+        "√sin(30)": math.sqrt(0.5),
+    }
+    for text, want in cases.items():
+        shown, value = engine.calculate(text)
+        assert abs(value - want) < 1e-9, f"{text}: {value} != {want}"
+
+
 def test_table_trig_values(engine):
     """Табличные тригонометрические значения — обыкновенными дробями/радикалами."""
     table = {

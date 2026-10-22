@@ -3,49 +3,29 @@
 from __future__ import annotations
 
 from ..engine import CalculatorEngine
+from ..settings import load_settings
+from .theme import DEFAULT_THEME, THEMES
+
+__all__ = ["run_app", "initial_theme_name"]
 
 
-def apply_light_theme(app) -> None:
-    """Фиксированная светлая тема: не зависим от системной палитры Qt.
-
-    Без этого на системах с тёмной темой (KDE/GTK dark) весь текст
-    наследуется белым и сливается со светлыми фонами кнопок.
-    """
-    from PySide6.QtGui import QColor, QPalette
-
-    pal = QPalette()
-    pal.setColor(QPalette.ColorRole.Window, QColor("#f4f4f2"))
-    pal.setColor(QPalette.ColorRole.WindowText, QColor("#1a1a1a"))
-    pal.setColor(QPalette.ColorRole.Base, QColor("#ffffff"))
-    pal.setColor(QPalette.ColorRole.AlternateBase, QColor("#f0f0ee"))
-    pal.setColor(QPalette.ColorRole.Text, QColor("#1a1a1a"))
-    pal.setColor(QPalette.ColorRole.Button, QColor("#ffffff"))
-    pal.setColor(QPalette.ColorRole.ButtonText, QColor("#1a1a1a"))
-    pal.setColor(QPalette.ColorRole.Highlight, QColor("#4c8bf5"))
-    pal.setColor(QPalette.ColorRole.HighlightedText, QColor("#ffffff"))
-    pal.setColor(QPalette.ColorRole.ToolTipBase, QColor("#ffffe1"))
-    pal.setColor(QPalette.ColorRole.ToolTipText, QColor("#1a1a1a"))
-    pal.setColor(QPalette.ColorRole.PlaceholderText, QColor("#8a8a8a"))
-    pal.setColor(QPalette.ColorRole.Link, QColor("#2a6fdb"))
-    # неактивные виджеты — приглушённо-серые, но читаемые
-    for role in (QPalette.ColorRole.Text, QPalette.ColorRole.ButtonText,
-                 QPalette.ColorRole.WindowText):
-        pal.setColor(QPalette.ColorGroup.Disabled, role, QColor("#9a9a9a"))
-    app.setPalette(pal)
+def initial_theme_name() -> str:
+    """Тема из настроек; тёмная — по умолчанию и при мусорном значении."""
+    name = load_settings().get("theme")
+    return name if name in THEMES else DEFAULT_THEME
 
 
 def run_app(engine: CalculatorEngine) -> int:
-    """Создать QApplication, показать главное окно, войти в цикл событий."""
-    from PySide6.QtGui import QFont
+    """Создать QApplication, применить тему, показать окно, войти в цикл."""
     from PySide6.QtWidgets import QApplication
-    from .main_window import MainWindow, STYLESHEET
+
+    from . import theme
+    from .main_window import MainWindow
 
     app = QApplication(["Квантор"])
     app.setApplicationDisplayName("Квантор")
     app.setStyle("Fusion")
-    apply_light_theme(app)  # до создания окна: тема не зависит от системы
-    app.setFont(QFont("Segoe UI", 10))
-    app.setStyleSheet(STYLESHEET)
+    theme.apply_app_theme(app, initial_theme_name())  # до создания окна
 
     window = MainWindow(engine)
     window.show()

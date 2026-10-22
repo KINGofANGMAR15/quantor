@@ -1,4 +1,8 @@
-"""Диалоги «Квантора» (PySide6): уравнения/полиномы и история."""
+"""Диалоги «Квантора» (PySide6): уравнения/полиномы, неравенства, история.
+
+Стилевые цвета — только через gui.theme (objectName + общий QSS),
+inline-палитра запрещена.
+"""
 
 from __future__ import annotations
 
@@ -12,7 +16,6 @@ from PySide6.QtWidgets import (
 
 from ..calculus import CalculusEngine
 from ..engine import CalculatorEngine, CalculatorError, _fmt_number
-from ..latex_input import LatexParseError
 
 
 class EquationDialog(QDialog):
@@ -26,11 +29,14 @@ class EquationDialog(QDialog):
         self.calculus = calculus
         self._insert = insert_callback
         self.setWindowTitle("Уравнения — Квантор")
-        self.setMinimumWidth(520)
+        self.setMinimumWidth(560)
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 14)
+        layout.setSpacing(10)
         form = QFormLayout()
         form.setContentsMargins(0, 0, 0, 0)
+        form.setSpacing(10)
 
         self.eq_edit = QLineEdit("x^3-6x^2+11x-6=0")
         form.addRow("Уравнение (2^x=8, x^2-4=0):", self.eq_edit)
@@ -53,12 +59,15 @@ class EquationDialog(QDialog):
         layout.addWidget(self.list, 1)
 
         self.status = QLabel("")
-        self.status.setStyleSheet("color: #b3261e;")
+        self.status.setObjectName("status")
+        self.status.setWordWrap(True)
         layout.addWidget(self.status)
 
         buttons = QHBoxLayout()
         solve = QPushButton("Решить")
+        solve.setObjectName("eq")
         solve.setDefault(True)
+        solve.setCursor(Qt.CursorShape.PointingHandCursor)
         solve.clicked.connect(self.solve)
         insert = QPushButton("Вставить в дисплей")
         insert.clicked.connect(self._insert_selected)
@@ -75,17 +84,20 @@ class EquationDialog(QDialog):
     def solve(self) -> None:
         self.list.clear()
         self.status.setText("")
+        self.status.setProperty("err", False)
+        self._refresh_status()
         var = self.var_edit.text().strip() or "x"
         try:
             if self.mode_poly.isChecked():
                 raw = self.coeff_edit.text().replace(",", " ").split()
                 coeffs = [float(tok) for tok in raw]
-                roots = (self.engine if var == "x" else self.engine)\
-                    .solve_polynomial(coeffs, var)
+                roots = self.engine.solve_polynomial(coeffs, var)
             else:
                 roots = self.engine.solve_equation(self.eq_edit.text(), var)
         except (CalculatorError, ValueError) as exc:
             self.status.setText(f"Ошибка: {exc}")
+            self.status.setProperty("err", True)
+            self._refresh_status()
             return
         if not roots:
             self.status.setText("Корней не найдено")
@@ -94,6 +106,10 @@ class EquationDialog(QDialog):
             self.list.addItem(f"x{i} = {_fmt_number(root)}")
         # Первая строка выбрана сразу: «Вставить в дисплей» работает без клика
         self.list.setCurrentRow(0)
+
+    def _refresh_status(self) -> None:
+        self.status.style().unpolish(self.status)
+        self.status.style().polish(self.status)
 
     def _insert_selected(self, *_args) -> None:
         item = self.list.currentItem() or (
@@ -112,11 +128,14 @@ class InequalityDialog(QDialog):
         self.engine = engine
         self._insert = insert_callback
         self.setWindowTitle("Неравенства — Квантор")
-        self.setMinimumWidth(520)
+        self.setMinimumWidth(560)
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 14)
+        layout.setSpacing(10)
         form = QFormLayout()
         form.setContentsMargins(0, 0, 0, 0)
+        form.setSpacing(10)
 
         self.ineq_edit = QLineEdit("x^2-4<0")
         form.addRow("Неравенство (x^2-4<0, 2x-1>=3):", self.ineq_edit)
@@ -129,18 +148,21 @@ class InequalityDialog(QDialog):
         layout.addWidget(self.list, 1)
 
         self.status = QLabel("")
-        self.status.setStyleSheet("color: #b3261e;")
+        self.status.setObjectName("status")
+        self.status.setWordWrap(True)
         layout.addWidget(self.status)
 
         hint = QLabel(
             "Поддерживаются полиномы степени 1–4: x^2-4<0, "
             "x^3-6x^2+11x-6>=0, 0.5x<2.\n"
             "Знаки: <, >, <=, >=, ≤, ≥. Правую часть можно опустить (x<0).")
+        hint.setObjectName("cap")
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
         buttons = QHBoxLayout()
         solve = QPushButton("Решить")
+        solve.setObjectName("eq")
         solve.setDefault(True)
         solve.clicked.connect(self.solve)
         insert = QPushButton("Вставить в дисплей")
@@ -159,14 +181,22 @@ class InequalityDialog(QDialog):
     def solve(self) -> None:
         self.list.clear()
         self.status.setText("")
+        self.status.setProperty("err", False)
+        self._refresh_status()
         var = self.var_edit.text().strip() or "x"
         try:
             parts = self.engine.solve_inequality(self.ineq_edit.text(), var)
         except (CalculatorError, ValueError) as exc:
             self.status.setText(f"Ошибка: {exc}")
+            self.status.setProperty("err", True)
+            self._refresh_status()
             return
         for part in parts:
             self.list.addItem(part)
+
+    def _refresh_status(self) -> None:
+        self.status.style().unpolish(self.status)
+        self.status.style().polish(self.status)
 
     def _insert_ineq(self, *_args) -> None:
         text = self.ineq_edit.text().strip()
@@ -183,9 +213,11 @@ class HistoryDialog(QDialog):
         self._history = history
         self._insert = insert_callback
         self.setWindowTitle("История — Квантор")
-        self.resize(520, 380)
+        self.resize(540, 400)
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 14)
+        layout.setSpacing(10)
         self.list = QListWidget()
         self.list.itemDoubleClicked.connect(self._recall)
         for expr, result in history:

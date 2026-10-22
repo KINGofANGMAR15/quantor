@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from quantor.engine import CalculatorEngine
+from quantor.gui import theme
 from quantor.plotter import (
     PLOT_COLORS, PlotError, default_range, parse_functions, parse_lines,
     plot_data, sample_curve, _numeric_poles,
@@ -267,9 +268,10 @@ def test_plot_window_draws(qapp, isolated_settings):
     assert ax.get_legend() is not None
     assert "градус" in ax.get_xlabel()
     assert win.status.text() == "" or "Ошибка" not in win.status.text()
-    # яркие оси и оси через начало координат
+    # яркие оси и оси через начало координат (цвет — токен темы, не велосипед)
     assert float(ax.spines["left"].get_linewidth()) >= 1.4
-    assert any(abs(l.get_linewidth() - 1.4) < 1e-6 and l.get_color() == "#1a1a1a"
+    axis_color = theme.plot_style(theme.current())["axis_color"]
+    assert any(abs(l.get_linewidth() - 1.4) < 1e-6 and l.get_color() == axis_color
                for l in ax.lines)
     # панель зума
     assert hasattr(win, "nav") and win.nav is not None

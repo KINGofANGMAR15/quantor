@@ -1,8 +1,11 @@
 """Главное окно «Квантора» на PySide6 (Qt 6).
 
-Структура сверху вниз: панель живого предпросмотра LaTeX -> строка ввода ->
-результат (текст + предпросмотр формулы) -> сетка кнопок -> статус (режим, M).
+Структура сверху вниз: заголовочная строка (режим углов, память) ->
+панель живого предпросмотра LaTeX -> строка ввода -> панель результата
+(текст + формула) -> клавиатура калькулятора внизу фиксированной высоты.
+Оба предпросмотра — прозрачный matplotlib, цвет формулы берётся из темы.
 Вся математика — в engine.CalculatorEngine и calculus.CalculusEngine.
+Стили и палитры — в gui.theme, отдельного «второго списка цветов» нет.
 """
 
 from __future__ import annotations
@@ -13,7 +16,7 @@ import sympy as sp
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (
-    QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
+    QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
     QMessageBox, QPushButton, QSizePolicy, QVBoxLayout, QWidget,
 )
 
@@ -28,48 +31,9 @@ from ..latex_input import (
     LatexParseError, is_latex, parse_input, render_latex, to_latex,
 )
 from ..settings import load_settings, save_settings
+from . import theme
 from .dialogs import EquationDialog, HistoryDialog, InequalityDialog
 from .plot_window import PlotDialog
-
-# --- палитра (светлая) ---------------------------------------------------------
-BG = "#f4f4f2"
-FG = "#1a1a1a"
-ERR = "#b3261e"
-OK = "#0b6623"
-GRAY = "#8a8a8a"
-
-STYLESHEET = f"""
-QMainWindow, QDialog {{ background: {BG}; color: {FG}; }}
-QWidget {{ color: {FG}; }}
-QLineEdit#expr {{ font-family: 'Consolas','DejaVu Sans Mono',monospace;
-                  font-size: 17px; padding: 8px; background: #ffffff;
-                  color: {FG}; border: 1px solid #c9c9c4; border-radius: 4px; }}
-QLabel#preview {{ background: #ffffff; border: 1px solid #e0e0db;
-                  border-radius: 4px; color: {GRAY}; }}
-QLabel#result {{ font-size: 17px; font-weight: bold; color: {FG}; }}
-QLabel#result.err {{ color: {ERR}; }}
-QPushButton {{ font-size: 13px; padding: 8px 2px; border: 1px solid #cfcfc9;
-               border-radius: 4px; background: #ffffff; color: {FG}; }}
-QPushButton:hover {{ background: #eef1f5; }}
-QPushButton:pressed {{ background: #dfe4ea; }}
-QPushButton:disabled {{ color: #9a9a9a; }}
-QPushButton#sci {{ background: #e8f0fe; }}
-QPushButton#op {{ background: #eef3e6; }}
-QPushButton#mem {{ background: #eceae4; }}
-QPushButton#eq {{ background: #c8e6c9; font-weight: bold; }}
-QPushButton#clr {{ background: #ffcdd2; }}
-QPushButton#calc {{ background: #ede7f6; font-weight: bold; }}
-QLabel#mode {{ font-weight: bold; color: {FG}; }}
-QLabel#memind {{ font-weight: bold; color: {OK}; }}
-QMenuBar {{ background: {BG}; color: {FG}; }}
-QMenuBar::item:selected {{ background: #e4e7ec; }}
-QMenu {{ background: #ffffff; color: {FG}; }}
-QMenu::item:selected {{ background: #4c8bf5; color: #ffffff; }}
-QStatusBar {{ background: {BG}; color: {GRAY}; }}
-QListWidget {{ background: #ffffff; color: {FG}; }}
-QRadioButton {{ color: {FG}; }}
-QToolTip {{ background: #ffffe1; color: {FG}; border: 1px solid #c9c9c4; }}
-"""
 
 
 class MainWindow(QMainWindow):
@@ -81,9 +45,10 @@ class MainWindow(QMainWindow):
         self.calculus = CalculusEngine(engine)
         self._history: list[tuple[str, str]] = []
         self._last_value: Optional[float] = None
+        self._result_latex = ""          # формула результата — для смены темы
 
         self.setWindowTitle("Квантор — инженерный калькулятор")
-        self.setMinimumSize(660, 600)
+        self.setMinimumSize(680, 640)
         self._build_menu()
         self._build_ui()
         self._bind_keys()
@@ -92,73 +57,101 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ UI
     def _build_ui(self) -> None:
         central = QWidget()
+        central.setObjectName("central")
         root = QVBoxLayout(central)
-        root.setContentsMargins(10, 8, 10, 10)
-        root.setSpacing(6)
+        root.setContentsMargins(theme.MARGIN, theme.MARGIN, theme.MARGIN,
+                                theme.MARGIN)
+        root.setSpacing(theme.SPACING)
 
-        # Живой предпросмотр LaTeX
+        # --- заголовок: режим углов, индикатор памяти ------------------------
+        header = QWidget()
+        header.setObjectName("header")
+        head = QHBoxLayout(header)
+        head.setContentsMargins(0, 0, 0, 0)
+        head.setSpacing(theme.SPACING)
+        self.mode_btn = QPushButton(self.engine.angle_mode)
+        self.mode_btn.setObjectName("calc")          # акцентная кнопка режима
+        self.mode_btn.setToolTip("Переключить градусы/радианы")
+        self.mode_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.mode_btn.clicked.connect(self._toggle_mode)
+        head.addWidget(self.mode_btn)
+        self.mem_label = QLabel("")
+        self.mem_label.setObjectName("memind")
+        head.addWidget(self.mem_label)
+        head.addStretch(1)
+        root.addWidget(header)
+
+        # --- панель живого предпросмотра LaTeX -------------------------------
+        preview_frame = QFrame()
+        preview_frame.setObjectName("panel")
+        pv = QVBoxLayout(preview_frame)
+        pv.setContentsMargins(10, 8, 10, 8)
         self.preview = QLabel(" ")
         self.preview.setObjectName("preview")
         self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview.setMinimumHeight(76)
+        self.preview.setMinimumHeight(96)
         self.preview.setSizePolicy(QSizePolicy.Policy.Expanding,
-                                   QSizePolicy.Policy.Fixed)
-        root.addWidget(self.preview)
+                                   QSizePolicy.Policy.Expanding)
+        pv.addWidget(self.preview)
+        root.addWidget(preview_frame, 1)
 
-        # Строка ввода
+        # --- строка ввода (главный элемент) ----------------------------------
         self.input = QLineEdit()
         self.input.setObjectName("expr")
         self.input.setPlaceholderText(
-            "выражение или LaTeX: sin(30) · \\frac{\\sin(x)}{2} · \\int_{0}^{\\pi} \\sin(x) dx")
+            "выражение или LaTeX: sin(30) · \\frac{\\sin(x)}{2} · "
+            "\\int_{0}^{\\pi} \\sin(x) dx")
         root.addWidget(self.input)
 
-        # Результат: текст + предпросмотр формулы
+        # --- панель результата: текст + математическое представление ---------
+        result_frame = QFrame()
+        result_frame.setObjectName("panel")
+        rl = QVBoxLayout(result_frame)
+        rl.setContentsMargins(14, 10, 14, 10)
+        rl.setSpacing(4)
+        row = QHBoxLayout()
+        row.setSpacing(theme.SPACING)
         self.result = QLabel(" ")
         self.result.setObjectName("result")
-        self.result.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.result.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse)
         self.result.setWordWrap(True)
-        root.addWidget(self.result)
-
+        self.result.setMinimumHeight(38)
+        self.result.setSizePolicy(QSizePolicy.Policy.Expanding,
+                                  QSizePolicy.Policy.Preferred)
+        row.addWidget(self.result, 1)
         self.result_preview = QLabel(" ")
         self.result_preview.setObjectName("preview")
         self.result_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.result_preview.setMinimumHeight(64)
-        root.addWidget(self.result_preview)
+        self.result_preview.setSizePolicy(QSizePolicy.Policy.Expanding,
+                                          QSizePolicy.Policy.Expanding)
+        row.addWidget(self.result_preview, 0, Qt.AlignmentFlag.AlignVCenter)
+        rl.addLayout(row, 1)
+        root.addWidget(result_frame)
 
-        # Статус: режим углов + индикатор памяти
-        status = QHBoxLayout()
-        self.mode_btn = QPushButton(self.engine.angle_mode)
-        self.mode_btn.setObjectName("mem")
-        self.mode_btn.setFixedWidth(72)
-        self.mode_btn.setToolTip("Переключить градусы/радианы")
-        self.mode_btn.clicked.connect(self._toggle_mode)
-        status.addWidget(self.mode_btn)
-        self.mem_label = QLabel("")
-        self.mem_label.setObjectName("memind")
-        status.addWidget(self.mem_label)
-        status.addStretch(1)
-        root.addLayout(status)
-
-        # Сетка кнопок
+        # --- клавиатура калькулятора -----------------------------------------
         grid_holder = QWidget()
         grid = QGridLayout(grid_holder)
-        grid.setSpacing(4)
-        rows = self._button_rows()
-        styles = self._button_styles()
-        for r, row in enumerate(rows):
-            for c, (label, action) in enumerate(row):
+        grid.setSpacing(6)
+        grid.setContentsMargins(0, 0, 0, 0)
+        for r, row_items in enumerate(self._button_rows()):
+            for c, (label, action) in enumerate(row_items):
                 btn = QPushButton(label)
-                btn.setObjectName(styles.get(label, "sci"))
+                btn.setObjectName(self._button_styles().get(label, "sci"))
                 btn.setSizePolicy(QSizePolicy.Policy.Expanding,
                                   QSizePolicy.Policy.Expanding)
+                btn.setMinimumHeight(34)
+                btn.setCursor(Qt.CursorShape.PointingHandCursor)
                 if callable(action):
                     btn.clicked.connect(action)
                 else:
-                    btn.clicked.connect(lambda _=False, t=action: self._insert(t))
+                    btn.clicked.connect(
+                        lambda _=False, t=action: self._insert(t))
                 grid.addWidget(btn, r, c)
         for c in range(7):
             grid.setColumnStretch(c, 1)
-        root.addWidget(grid_holder, 1)
+        root.addWidget(grid_holder)
 
         self.setCentralWidget(central)
 
@@ -186,7 +179,8 @@ class MainWindow(QMainWindow):
              ("0", "0"), (".", "."), ("+", "+"), ("=", self._evaluate)],
             [("√", "√"), ("n!", "!"), ("|x|", "abs("),
              ("(", "("), (")", ")"), ("mod(", "mod("), ("M+", self._mem_add)],
-            [("MR", self._mem_recall), ("M−", self._mem_sub), ("MC", self._mem_clear),
+            [("MR", self._mem_recall), ("M−", self._mem_sub),
+             ("MC", self._mem_clear),
              ("1/x", "^(-1)"), ("10ˣ", "10^"), ("eˣ", "exp("),
              ("История", self._show_history)],
             [("∫ dx", "\\int "), ("∫ₐᵇ dx", "\\int_{0}^{1} "),
@@ -197,12 +191,19 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _button_styles() -> dict:
+        """Роль каждой кнопки: рендерится единым QSS из gui.theme."""
         styles = {name: "mem" for name in
                   ("DEG/RAD", "M+", "M−", "MR", "MC", "История")}
-        styles.update({"C": "clr", "⌫": "clr", "=": "eq", "Уравнение": "sci"})
-        styles.update({name: "op" for name in ("÷", "×", "−", "+", "^", "!")})
+        styles.update({name: "num" for name in
+                       ("0", "1", "2", "3", "4", "5", "6", "7", "8", "9", ".")})
+        styles.update({"C": "clr", "⌫": "clr", "=": "eq",
+                       "Уравнение": "sci", "⧉ LaTeX": "sci"})
+        styles.update({name: "op" for name in
+                       ("÷", "×", "−", "+", "^", "!", "**2", "^(-1)",
+                        "10^", "exp(", "√", "abs(", "mod(")})
         styles.update({name: "calc" for name in
-                       ("∫ dx", "∫ₐᵇ dx", "d/dx", "d²/dx²", "d³/dx³", "|ₓ₌ₐ")})
+                       ("∫ dx", "∫ₐᵇ dx", "d/dx", "d²/dx²", "d³/dx³",
+                        "|ₓ₌ₐ")})
         return styles
 
     def _bind_keys(self) -> None:
@@ -252,6 +253,20 @@ class MainWindow(QMainWindow):
             act.triggered.connect(lambda _=False, n=name: self._insert(n))
             const_menu.addAction(act)
 
+        view_menu = menubar.addMenu("Вид")
+        view_group = QActionGroup(self)
+        self._theme_actions = {}
+        for tname, title in (("dark", "Тёмная тема"),
+                             ("light", "Светлая тема")):
+            act = QAction(title, self)
+            act.setCheckable(True)
+            act.setChecked(theme.current_theme_name() == tname)
+            act.triggered.connect(
+                lambda _=False, n=tname: self._set_theme(n))
+            view_group.addAction(act)
+            view_menu.addAction(act)
+            self._theme_actions[tname] = act
+
         hist = QAction("История", self)
         hist.triggered.connect(self._show_history)
         menubar.addAction(hist)
@@ -280,7 +295,7 @@ class MainWindow(QMainWindow):
         self.result.setText(" ")
         self.result.setProperty("err", False)
         self._style_refresh(self.result)
-        self.result_preview.clear()
+        self._set_result_preview("")
         self._update_preview()
 
     def _backspace(self) -> None:
@@ -382,12 +397,17 @@ class MainWindow(QMainWindow):
         self._set_result_preview(to_latex(sol))
 
     def _show_error(self, message: str) -> None:
-        self.result.setText(f"Ошибка: {message}")
+        # «Ошибка ввода» без дубля префикса
+        body = message if message.startswith("Ошибка") else f"Ошибка: {message}"
+        self.result.setText(body)
         self.result.setProperty("err", True)
         self._style_refresh(self.result)
-        self.result_preview.clear()
+        self._set_result_preview("")
 
     # ------------------------------------------------------------------ предпросмотр
+    def _theme_color(self) -> str:
+        return theme.current()["text"]
+
     def _update_preview(self) -> None:
         text = self.input.text().strip()
         if not text:
@@ -396,12 +416,13 @@ class MainWindow(QMainWindow):
             return
         latex = text if is_latex(text) else None
         if latex is None:
-            try:  # обычный ввод тоже показываем формулой
-                latex = to_latex(parse_input(text, self.engine))
+            try:  # обычный ввод показываем формулой через безопасный парсер
+                expr = self.engine._parse(text, self.engine._namespace())
+                latex = to_latex(expr)
             except Exception:
                 latex = None
         source = latex if latex is not None else text
-        pixmap = render_latex(source)
+        pixmap = render_latex(source, fontsize=18, color=self._theme_color())
         if pixmap is not None and not pixmap.isNull():
             self.preview.setPixmap(pixmap)
             self.preview.setText("")
@@ -410,7 +431,8 @@ class MainWindow(QMainWindow):
             self.preview.setText("предпросмотр недоступен — проверьте ввод")
 
     def _set_result_preview(self, latex: str) -> None:
-        pixmap = render_latex(latex)
+        self._result_latex = latex or ""
+        pixmap = render_latex(latex, color=self._theme_color()) if latex else None
         if pixmap is not None and not pixmap.isNull():
             self.result_preview.setPixmap(pixmap)
             self.result_preview.setText("")
@@ -486,7 +508,8 @@ class MainWindow(QMainWindow):
         self._update_mem()
 
     def _update_mem(self) -> None:
-        self.mem_label.setText("M" if abs(self.engine.mem_recall()) > 1e-300 else "")
+        self.mem_label.setText("M" if abs(self.engine.mem_recall()) > 1e-300
+                               else "")
 
     # ------------------------------------------------------------------ окна
     def _toggle_mode(self) -> None:
@@ -499,8 +522,26 @@ class MainWindow(QMainWindow):
             act.setChecked(act.text() == mode)
         self._update_preview()
 
+    # ------------------------------------------------------------------ темы
+    def _set_theme(self, name: str) -> None:
+        """Переключить тему: палитра+QSS, перерендер формул, сохранение."""
+        app = QGuiApplication.instance()
+        if app is None:
+            return
+        theme.apply_app_theme(app, name)
+        settings = load_settings()
+        settings["theme"] = name
+        save_settings(settings)
+        for tname, act in self._theme_actions.items():
+            act.setChecked(tname == name)
+        # формулы отрендерены в старом цвете — перерисовать
+        self._update_preview()
+        self._set_result_preview(self._result_latex)
+        self._update_mem()
+
     def _open_equation(self) -> None:
-        EquationDialog(self, self.engine, self.calculus, self._insert_at_cursor).exec()
+        EquationDialog(self, self.engine, self.calculus,
+                       self._insert_at_cursor).exec()
 
     def _open_inequality(self) -> None:
         InequalityDialog(self, self.engine, self._insert_at_cursor).exec()
@@ -546,6 +587,8 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt-имя)
         settings = load_settings()
         settings["angle_mode"] = self.engine.angle_mode
-        settings["qt_geometry"] = bytes(self.saveGeometry().toHex()).decode("ascii")
+        settings["theme"] = theme.current_theme_name()
+        settings["qt_geometry"] = bytes(
+            self.saveGeometry().toHex()).decode("ascii")
         save_settings(settings)
         super().closeEvent(event)
