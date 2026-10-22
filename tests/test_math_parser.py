@@ -158,9 +158,16 @@ def test_sympify_chain_is_closed(ns):
 
 
 def test_unknown_becomes_symbol_not_python_object(ns):
-    """Неизвестные имена — Symbol, а не найденный в namespace объект."""
-    assert p("oo", ns) == sp.Symbol("oo")           # не sp.oo
-    assert p("I", ns) == sp.Symbol("I")             # не мнимая единица
+    """Неизвестные имена — Symbol, а не найденный в namespace объект.
+
+    Исключение — мнимая единица i/I/j: она возвращена в константы
+    (прежде «2j» через parse_expr был комплексным литералом), всё
+    остальное из sympy-пространства имён остаётся намеренно Symbol.
+    """
+    for name in ("oo", "zoo", "nan", "tau", "Catalan", "GoldenRatio"):
+        assert p(name, ns) == sp.Symbol(name)       # не константа/класс sympy
+    assert p("Integral", ns) == sp.Symbol("Integral")
+    assert p("i", ns) == sp.I                       # мнимая единица — задумано
     assert p("open", ns) == sp.Symbol("open")       # не builtin
 
 
@@ -213,9 +220,15 @@ def test_huge_power_rejected(ns):
 
 
 def test_huge_factorial_rejected(ns):
+    # Лимит — по оценке ЦИФР результата (lgamma), не по аргументу:
+    # 50000! — 213 237 цифр, это выше заявленных 200 000.
     with pytest.raises(MathParseError):
-        p("50001!", ns)
-    assert p("50000!", ns) == sp.factorial(50000)
+        p("50000!", ns)
+    with pytest.raises(MathParseError):
+        p("99999!", ns)
+    with pytest.raises(MathParseError):
+        p("(2^5000)!", ns)          # lgamma не берёт float такого размера
+    assert p("45000!", ns) == sp.factorial(45000)      # ~190k цифр — в лимите
 
 
 def test_float_huge_power_is_fast(ns):
@@ -273,3 +286,81 @@ def test_engine_error_messages_are_friendly(engine):
         engine.calculate("foo(1)")
     with pytest.raises(CalculatorError, match="не поддерживается"):
         engine.calculate("x[0]")
+
+
+# ------------------------------------------------------- adversarial-регрессии
+# Находки специализированного security-прохода 2026-10; каждая строка —
+# воспроизводитель конкретной обходной атаки, см. отчёт review.
+
+def test_rational_exponent_pow_bomb_rejected(ns):
+    """Rational-показатель: SymPy выделяет целую часть (2^(p/q) -> 2^(p//q)…).
+
+    «2^(10^15/3)» (12 символов) раньше строило степень с ~10^14 цифрами:
+    9.6 с и ~1 ГБ RSS до MemoryError.
+    """
+    for expr in ("2^(10^15/3)", "2^(2^30/7)", "(3/2)^(2^30/7)",
+                 "(2^5000)^(10000/3)"):
+        with pytest.raises(MathParseError):
+            parse(_preprocess(expr), ns)
+
+
+def test_rational_exponent_exact_semantics_kept(ns):
+    """Легитимный рациональный показатель продолжает считаться точно."""
+    three_thirds = sp.Rational(10, 3)
+    assert p("2^(10/3)", ns) == sp.Integer(2) ** three_thirds  # 8*2^(1/3)
+
+
+def test_mul_chain_of_huge_powers_displayed(engine):
+    """Цепочки умножений больших степеней: SymPy склеивает показатели Mul'ом.
+
+    Лимит цифр — на узел степени, поэтому цепочка законно накапливает
+    ~400k цифр; проверяем, что расчёт не крошится (раньше — OverflowError
+    в _fmt_float и ValueError от sys.set_int_max_str_digits).
+    """
+    shown, _ = engine.calculate("(10^9999)*(10^9999)")
+    assert shown == "1e19998"
+    shown, _ = engine.calculate("10^9999")
+    assert shown == "1e9999"
+
+
+def test_huge_int_scientific_format_matches_str():
+    """Регрессия _fmt_float: str() целых >4300 цифр запрещён с Python 3.11.
+
+    Для случайных значений до 4300 цифр str() доступен как эталон;
+    границы 10^300 и 10^301 проверяют «отбрасывание» float-пути.
+    """
+    import random
+
+    from quantor.engine import _fmt_number, _huge_int_scientific
+    random.seed(7)
+    for _ in range(200):
+        n = random.getrandbits(random.randint(1000, 14200))  # ≤ ~4300 цифр
+        if n < 10**308:
+            continue
+        s = str(abs(n))
+        mant = f"{s[0]}.{s[1:9]}".rstrip("0").rstrip(".")
+        assert _huge_int_scientific(n) == f"{mant}e{len(s) - 1}"
+    # известные значения — без эталона по str():
+    assert _huge_int_scientific(10**9999) == "1e9999"
+    assert _huge_int_scientific(2**10000) == "1.99506311e3010"
+    assert _huge_int_scientific(-(10**700)) == "-1e700"
+    assert _fmt_number(10**9999) == "1e9999"
+
+
+def test_imaginary_unit_is_builtin_constant(engine):
+    """Регрессия комплексных литералов: раньше «2j» считался (через parse_expr).
+
+    Теперь i/I/j явно входят в константы парсера, знак переопределяется
+    символом из ns, если пользователь хочет переменную.
+    """
+    assert math_parser._BUILTIN_CONSTANTS["i"] == sp.I
+    assert engine.calculate("2j") == ("2i", 2j)
+    assert engine.calculate("1+3i")[1] == 1 + 3j
+    assert engine.calculate("I*I")[0] == "-1"
+    i_sym = sp.Symbol("i")
+    assert parse(_preprocess("i^2"), {"i": i_sym}) == i_sym**2
+
+
+def test_display_of_huge_exact_int_is_not_infinite(engine):
+    """Точный Integer на границе float-степеней показывается, а не крошится."""
+    assert engine.calculate("2^10000")[0] == "1.99506311e3010"

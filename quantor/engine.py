@@ -30,6 +30,10 @@ Result = Tuple[str, Number]
 
 ANGLE_MODES = ("DEG", "RAD")
 
+#: Максимальная степень полиномиального уравнения (плотный полином 10-й
+#: степени решается SymPy десятки секунд — см. замеры в тестах безопасности)
+_MAX_EQUATION_DEGREE = 8
+
 # Точки старта для численного поиска корней nsolve (обычные уравнения).
 _NUM_STARTS = (-20.0, -10.0, -5.0, -2.0, -1.0, -0.5, 0.001,
                0.5, 1.0, 2.0, 3.0, 5.0, 7.0, 10.0, 15.0, 20.0)
@@ -199,10 +203,39 @@ def _exact_to_number(node: sp.Basic) -> Number:
     return value
 
 
+def _huge_int_scientific(v: int) -> str:
+    """Научная запись огромного целого: ``1.2345e789`` без str(v)/float(v).
+
+    str() целых длиннее 4300 цифр запрещён с Python 3.11, а Decimal(int)
+    конвертирует квадратично по числу цифр. Здесь: число цифр оценивается
+    через bit_length (ошибка не более +1), мантисса — одно деление на
+    10 ** k (частное короткое, деление линейно по размеру).
+    """
+    sign = "-" if v < 0 else ""
+    a = abs(v)
+    k = max(a.bit_length() * 30103 // 100000 + 1 - 9, 1)
+    m = a // 10 ** k                    # k могло быть на 1 велико (поэ. bit_length)
+    while m >= 10 ** 9:
+        m //= 10
+        k += 1
+    while m < 10 ** 8:
+        k -= 1
+        m = a // 10 ** k                # точные старшие цифры, не «*10 с нулём»
+    s = str(m)                          # m — 9 значащих цифр
+    mant = f"{s[0]}.{s[1:]}".rstrip("0").rstrip(".")
+    return f"{sign}{mant}e{k + len(s) - 1}"
+
+
 def _fmt_float(v: float) -> str:
     """Число в стиле дисплея калькулятора (до 10 значащих цифр)."""
     if v != v:  # NaN
         return "Ошибка"
+    if isinstance(v, int):
+        # Точное целое: float(v) переполнился бы, а str(v) на Python >= 3.11
+        # запрещён длиннее 4300 цифр (sys.set_int_max_str_digits) — научная
+        # запись из bit_length и одного деления (см. _huge_int_scientific).
+        if v.bit_length() * 30103 // 100000 + 1 > 308:
+            return _huge_int_scientific(v)
     if v == int(v) and abs(v) < 1e15:
         return str(int(v))
     a = abs(v)
@@ -541,8 +574,20 @@ class CalculatorEngine:
             values = list(coeffs)
             if len(values) < 2:
                 raise CalculatorError("Нужно минимум два коэффициента")
+            if len(values) - 1 > _MAX_EQUATION_DEGREE:
+                raise CalculatorError(
+                    f"Степень полинома ({len(values) - 1}) выше поддерживаемой "
+                    f"({_MAX_EQUATION_DEGREE})")
             poly_expr = sp.Poly([sp.Rational(c) for c in values],
                                 sp.Symbol(var)).as_expr()
+        try:
+            deg = sp.Poly(poly_expr, sp.Symbol(var)).degree()
+            if deg > _MAX_EQUATION_DEGREE:
+                raise CalculatorError(
+                    f"Степень полинома ({deg}) выше поддерживаемой "
+                    f"({_MAX_EQUATION_DEGREE})")
+        except sp.PolynomialError:
+            pass
         try:
             roots = sp.solve(poly_expr, sp.Symbol(var))
         except Exception:
@@ -589,6 +634,14 @@ class CalculatorEngine:
             raise CalculatorError("Бесконечно много решений")
         if sym not in f.free_symbols:
             raise CalculatorError("Нет решений")
+        try:
+            deg = sp.Poly(f, sym).degree()
+        except sp.PolynomialError:
+            deg = None       # трансцендентное уравнение — решаем как раньше
+        if deg is not None and deg > _MAX_EQUATION_DEGREE:
+            raise CalculatorError(
+                f"Степень уравнения ({deg}) выше поддерживаемой "
+                f"({_MAX_EQUATION_DEGREE})")
         try:
             solutions = sp.solve(f, sym)
         except Exception:

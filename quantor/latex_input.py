@@ -15,6 +15,7 @@ from typing import Any, Dict, Optional, Tuple
 import sympy as sp
 
 from .engine import CalculatorEngine
+from .math_parser import MAX_INPUT_LEN
 
 __all__ = ["LatexParseError", "is_latex", "parse_input", "to_latex",
            "render_latex", "mathtext_safe"]
@@ -59,6 +60,10 @@ def parse_input(text: str, engine: Optional[CalculatorEngine] = None) -> sp.Expr
     text = (text or "").strip()
     if not text:
         raise LatexParseError("Пустой ввод")
+    if len(text) > MAX_INPUT_LEN:
+        # ANTLR-парсер linearён по длине, но на сотнях килобайт уже висит
+        raise LatexParseError(
+            f"Выражение слишком длинное (максимум {MAX_INPUT_LEN} символов)")
     if is_latex(text):
         return _parse_latex_expr(text)
     eng = _default_engine()  # RAD: чистая математика без угловой конверсии
@@ -118,7 +123,7 @@ def _parse_latex_expr(text: str) -> sp.Expr:
 
 
 def _latex_constants(expr: sp.Basic) -> sp.Basic:
-    """parse_latex даёт pi и e как СИМВОЛЫ — подменяем их на константы SymPy.
+    r"""parse_latex даёт pi и e как СИМВОЛЫ — подменяем их на константы SymPy.
 
     Иначе \int_{0}^{\pi} считается с 'pi' как неизвестной переменной.
     (Побочный эффект: 'e' нельзя использовать как неизвестную в LaTeX-вводе —
@@ -133,7 +138,12 @@ def _latex_constants(expr: sp.Basic) -> sp.Basic:
 
 
 def _parse_latex_sympy(tex: str) -> sp.Basic:
-    """parse_latex с запасным парсером latex2sympy2_extended (если установлен)."""
+    """parse_latex (строгий режим) с запасным парсером latex2sympy2_extended.
+
+    strict=True обязателен: без него ANTLR-парсер «восстанавливается» молча —
+    «x + » и «x^» разбираются как просто «x», лишняя «}» отбрасывается,
+    то есть часть выражения немо теряется.
+    """
     try:
         from sympy.parsing.latex import parse_latex
     except ImportError as exc:
@@ -141,7 +151,7 @@ def _parse_latex_sympy(tex: str) -> sp.Basic:
             "Для LaTeX-парсера нужен пакет antlr4-python3-runtime "
             "(pip install antlr4-python3-runtime)") from exc
     try:
-        return parse_latex(tex)
+        return parse_latex(tex, strict=True)
     except Exception as parse_exc:
         # Запасной вариант: latex2sympy2_extended понимает больше конструкций.
         try:

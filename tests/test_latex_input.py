@@ -68,3 +68,38 @@ def test_render_latex_pixmap(qapp):
 def test_render_latex_bad_formula_returns_none(qapp):
     from quantor.latex_input import render_latex
     assert render_latex(r"\frac{1}{") is None  # не падает, возвращает None
+
+
+# ------------------------------------------------- adversarial-регрессии 2026-10
+def test_latex_length_limit():
+    """ANTLR-парсер висит >25 с на ~120 КБ latex; parse_input обязан отсекать."""
+    long_latex = r"\frac{1}{2}+" * 70            # 770 символов
+    with pytest.raises(LatexParseError, match="слишком длинное"):
+        parse_input(long_latex)
+    long_plain = "1+" * 400                      # обычный ввод — тоже
+    with pytest.raises(LatexParseError, match="слишком длинное"):
+        parse_input(long_plain)
+
+
+def test_latex_deep_nesting_fails_friendly():
+    """~100 уровней \frac → RecursionError из ANTLR, а не traceback."""
+    with pytest.raises(LatexParseError):
+        parse_input(r"\frac{1}{" * 150)
+
+
+def test_latex_strict_rejects_partial_parse():
+    """Lenient-режим parse_latex молча принимает часть выражения:
+    «x + » → x, «x^» → x, лишняя «}» отбрасывается. strict=True обязан
+    отвергать такие входы, легитимному корпусу он не мешает."""
+    from quantor.latex_input import _parse_latex_sympy
+    for bad in ("x + ", "x^", r"\frac{1}{2} } "):
+        with pytest.raises(Exception):           # LaTeXParsingError в strict
+            _parse_latex_sympy(bad)
+    # публичный API ниже по течению возвращает понятную LatexParseError
+    with pytest.raises(LatexParseError):
+        parse_input(r"\frac{1}{2} } ")
+    with pytest.raises(LatexParseError):
+        parse_input("x + ")
+    # корректный вход продолжает разбираться
+    assert parse_input(r"\frac{1}{2} + \frac{1}{3}") == sp.Rational(5, 6)
+    assert parse_input(r"\int_{0}^{\pi} \sin(x) dx") is not None

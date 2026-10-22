@@ -34,16 +34,19 @@ SymPy, не должен применяться к неочищенному вв
 Ограничения ресурсозатрат (защита от «вычислительных бомб»; сами по себе
 лимиты длины строки не достаточны — поэтому есть семантические пределы):
 
-======================  ========  =============================================
-параметр                значение  смысл
-======================  ========  =============================================
-MAX_INPUT_LEN           600       длина одного выражения в символах
-MAX_NODES               2000      число узлов (чисел, имён, операций)
-MAX_DEPTH               50        вложенность скобок и вызовов
-модуль целой степени    10 000    ``2^100000`` отвергается
-порядок цифр результата 200 000   оценка размера Integer/Rational степеней
-аргумент факториала     50 000    ``50001!`` отвергается
-======================  ========  =============================================
+=====================  =========  =============================================
+MAX_INPUT_LEN          600        длина одного выражения в символах
+MAX_NODES              2000       число узлов (чисел, имён, операций)
+MAX_DEPTH              50         вложенность скобок и вызовов
+целая часть показателя 10 000     ``2^100000`` и ``2^(10^15/3)`` отвергаются
+цифры результата       200 000    оценка цифр степени/факториала на ОДИН узел
+=====================  =========  =============================================
+
+Замечание про накопление: проверка цифр — на каждый узел возведения в
+степень/факториал отдельно. Цепочки умножений больших степеней
+(``(10^9999)*(10^9999)*…``) объёдиняются SymPy в один Mul и в сумме
+могут дать до ~10^6 цифр в пределах лимита длины (десятки миллисекунд —
+измерено: 40 множителей ``9^9999`` ≈ 0.26 с, 810 000 цифр).
 
 Ошибки вычисления переданных функций (например ``CalculatorError`` от
 ``log(1, 1)``) пробрасываются как есть — движок сам решает, что показать
@@ -53,6 +56,7 @@ MAX_DEPTH               50        вложенность скобок и выз�
 from __future__ import annotations
 
 import keyword
+import math
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -73,15 +77,16 @@ MAX_INPUT_LEN = 600
 MAX_NODES = 2000
 #: Максимальная вложенность скобок и вызовов функций
 MAX_DEPTH = 50
-#: Максимальный модуль ЦЕЛОЙ степени (2^100000 отвергается до вычисления)
+#: Максимальный модуль целой части показателя степени (и для Rational-степеней)
 _MAX_POW_EXP = 10_000
-#: Оценка максимума десятичных цифр результата степени/факториала
+#: Оценка максимума десятичных цифр результата степени/факториала (на узел)
 _MAX_RESULT_DIGITS = 200_000
-#: Максимальный целый аргумент факториала
-_MAX_FACTORIAL_N = 50_000
 
-#: Константы самого парсера (остальные имена движок передаёт через ns)
-_BUILTIN_CONSTANTS: Dict[str, sp.Basic] = {"pi": sp.pi}
+#: Константы самого парсера (остальные имена движок передаёт через ns).
+#: pi — базовая; I/i/j — мнимая единица (прежде работала литеральная ``2j``).
+_BUILTIN_CONSTANTS: Dict[str, sp.Basic] = {
+    "pi": sp.pi, "I": sp.I, "i": sp.I, "j": sp.I,
+}
 
 _NUM_RE = re.compile(
     r"(?:\d[\d_]*(?:\.\d[\d_]*)?|\.\d[\d_]*)(?:[eE][+-]?\d+)?")
@@ -144,43 +149,69 @@ def _make_number(text: str) -> sp.Basic:
 
 
 def _integer_digits(value: sp.Basic) -> int:
-    """Оценка числа десятичных цифр целого/рационального значения."""
+    """Оценка числа десятичных цифр целого/рационального значения.
+
+    Через bit_length, а не str(): на Python >= 3.11 str() целого длиннее
+    4300 цифр бросает ValueError (sys.set_int_max_str_digits). Точность
+    оценки ±1 цифра — для гарда достаточно.
+    """
+    def _est(n: int) -> int:
+        n = abs(int(n))
+        if n < 10 ** 4300:                      # str безопасен и точен
+            try:
+                return len(str(n))
+            except ValueError:
+                pass
+        return n.bit_length() * 30103 // 100000 + 1
+
     if isinstance(value, sp.Integer):
-        return len(str(abs(int(value))))
+        return _est(int(value))
     p, q = value.as_numer_denom()
-    return len(str(abs(int(p)))) + len(str(abs(int(q))))
+    return _est(p) + _est(q)
 
 
 def _make_pow(base: sp.Basic, exp: sp.Basic) -> sp.Basic:
     """Возведение в степень с проверкой размера ДО вычисления SymPy.
 
-    Опасны только точные (Integer/Rational) основания с целым показателем:
-    SymPy вычисляет их точно, и ``2^(10^10)`` исчерпал бы память.
-    Float-основания считаются mpmath с фиксированной точностью,
-    символические остаются невычисленными — считать безопасно.
+    Опасны целые показатели точного (Integer/Rational) основания. SymPy
+    для рационального показателя выделяет ЦЕЛУЮ ЧАСТЬ
+    (``2^(10/3) -> 8*2^(1/3)``), поэтому ограничиваем и Integer, и выражаемую
+    через него часть Rational (``2^(10^15/3)`` иначе построило бы степень
+    с ~10^14 цифрами). Float-основания считаются mpmath с фиксированной
+    точностью, символические остаются невычисленными — безопасно.
     """
-    if isinstance(exp, sp.Integer) and isinstance(base, sp.Basic):
-        e = abs(int(exp))
-        if base.is_Integer or base.is_Rational:
-            if e > _MAX_POW_EXP:
+    if (isinstance(base, sp.Basic) and (base.is_Integer or base.is_Rational)
+            and isinstance(exp, sp.Rational)):   # Integer — подкласс Rational
+        e = abs(int(exp))                        # целая часть показателя
+        if e > _MAX_POW_EXP:
+            raise MathParseError(
+                f"Степень слишком велика (максимум {_MAX_POW_EXP})")
+        if e:
+            digits = e * _integer_digits(base)
+            if digits > _MAX_RESULT_DIGITS:
                 raise MathParseError(
-                    f"Степень слишком велика (максимум {_MAX_POW_EXP})")
-            if e:
-                digits = e * _integer_digits(base)
-                if digits > _MAX_RESULT_DIGITS:
-                    raise MathParseError(
-                        "Слишком большая степень: результат не поместится "
-                        f"(~{digits} цифр)")
+                    "Слишком большая степень: результат не поместится "
+                    f"(~{digits} цифр)")
     return base ** exp
+
+
+def _factorial_digits(n: int) -> int:
+    """Оценка числа десятичных цифр n! через log Gamma."""
+    try:
+        return int(math.lgamma(n + 1) / math.log(10)) + 1
+    except (OverflowError, ValueError):
+        return _MAX_RESULT_DIGITS + 1     # чудовищный аргумент — сразу отказ
 
 
 def _make_factorial(node: sp.Basic, bangs: int) -> sp.Basic:
     """Постфиксный факториал: ``x!`` и ``x!!`` (двойной)."""
     if bangs > 2:
         raise MathParseError("Многократный факториал «!!!» не поддерживается")
-    if isinstance(node, sp.Integer) and int(node) > _MAX_FACTORIAL_N:
-        raise MathParseError(
-            f"Аргумент факториала слишком велик (максимум {_MAX_FACTORIAL_N})")
+    if isinstance(node, sp.Integer) and int(node) >= 0:
+        digits = _factorial_digits(int(node))
+        if digits > _MAX_RESULT_DIGITS:
+            raise MathParseError(
+                f"Слишком большой факториал: ~{digits} цифр результата")
     return sp.factorial2(node) if bangs == 2 else sp.factorial(node)
 
 
