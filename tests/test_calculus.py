@@ -1,5 +1,7 @@
 """Тесты интегралов и производных (quantor.calculus)."""
 
+import math
+
 import pytest
 
 import sympy as sp
@@ -82,7 +84,7 @@ def test_query_plain_integrate(calculus):
 
 # ---------------------------------------------------------------- производные
 def test_derivative_first(calculus):
-    """DoD: \frac{d}{dx} \sin(x) -> cos(x)."""
+    r"""DoD: \frac{d}{dx} \sin(x) -> cos(x)."""
     result, latex = calculus.derivative(r"\sin(x)", "x")
     assert result == sp.cos(sp.Symbol("x"))
     assert r"\cos" in latex
@@ -111,7 +113,7 @@ def test_query_derivative_high_order(calculus):
 
 
 def test_derivative_at_point(calculus):
-    """DoD: \frac{d}{dx} \sin(x) \big|_{x=0} -> 1.0."""
+    r"""DoD: \frac{d}{dx} \sin(x) \big|_{x=0} -> 1.0."""
     assert calculus.derivative_at_point(r"\sin(x)", "x", 0) == 1.0
 
 
@@ -155,3 +157,88 @@ def test_result_uses_engine_constants(calculus):
     """Тело запроса может использовать константы ядра (C — скорость света)."""
     res = calculus.evaluate_query(r"\int_{0}^{1} C x dx")
     assert res.value == pytest.approx(299792458.0 / 2)
+
+
+# ------------------------------------- границы интегрирования: безопасность и ввод
+def test_definite_pow_bomb_rejected(calculus):
+    r"""Предел минует гард литеральных степеней парсера — гард обязателен.
+
+    `\int_{0}^{10^15/3} 2^x dx` раньше строил 2^(10^15/3) внутри integrate:
+    ~10 с и MemoryError (измерено в изоляции). Должен быть понятный отказ.
+    """
+    from quantor.engine import CalculatorError
+
+    with pytest.raises(ValueError, match="Степень слишком велика"):
+        calculus.evaluate_query(r"\int_{0}^{10^15/3} 2^x dx")
+    with pytest.raises(CalculatorError, match="Степень"):
+        calculus.definite_integral("2^x", "x", "0", "10^15/3")
+
+
+def test_derivative_at_point_pow_bomb_rejected(calculus):
+    """Подстановка точки в производную 2^x — тот же класс «бомбы»."""
+    with pytest.raises(ValueError, match="Степень слишком велика"):
+        calculus.derivative_at_point("2^x", "x", "10^15/3")
+
+
+def test_derivative_at_point_factorial_bomb_rejected(calculus):
+    """factorial(Integer) SymPy вычисляет жадно — гард и на факториалы."""
+    with pytest.raises(ValueError, match="факториал"):
+        calculus.derivative_at_point("x!", "x", "10^15")
+
+
+def test_polynomial_growth_bound_rejected(calculus):
+    """∫₀^b xⁿ при огромных b: та же политика цифр, что у парсера степеней."""
+    from quantor.engine import CalculatorError
+
+    with pytest.raises(CalculatorError, match="Степень слишком велика"):
+        calculus.definite_integral("x^20000", "x", "0", "10^15")
+
+
+def test_normal_large_bounds_still_work(calculus):
+    """Большие, но безопасные пределы не пострадали от гарда."""
+    data = calculus.definite_integral("x^2", "x", "0", "10^15")
+    assert data["symbolic"] == sp.Rational(10**45, 3)
+    data = calculus.definite_integral("2^x", "x", "0", "100")
+    assert data["value"] == pytest.approx((2.0**100 - 1.0) / math.log(2))
+
+
+def test_definite_bound_constant_name(calculus):
+    r"""Предел «e»: движок возвращает константу python-числом — AttributeError.
+
+    `\int_{1}^{e} 1/x dx` = ln(e) = 1 (регрессия: 'float' has no 'free_symbols').
+    """
+    data = calculus.definite_integral(r"\frac{1}{x}", "x", "1", "e")
+    # e приходит python-числом (15 знаков), точной единицы не будет — и не надо
+    assert float(data["symbolic"]) == pytest.approx(1.0)
+    assert data["numeric"] == pytest.approx(1.0)
+
+
+def test_definite_infinite_bound(calculus):
+    r"""`oo` в пределе — бесконечность, а не неизвестный Symbol.
+
+    Раньше выводился бессмысленный «точно: 1 - exp(-oo)».
+    """
+    data = calculus.evaluate_query(r"\int_{0}^{oo} e^{-x} dx")
+    assert data.value == pytest.approx(1.0)
+    assert data.lines[0] == "точно: 1"
+    data = calculus.evaluate_query(r"\int_{0}^{\infty} e^{-x} dx")
+    assert data.value == pytest.approx(1.0)
+
+
+def test_definite_limits_without_braces(calculus):
+    r"""\int_0^\pi — пределы одиночными атомами, как в тетради."""
+    res = calculus.evaluate_query(r"\int_0^\pi \sin(x) dx")
+    assert res.value == pytest.approx(2.0)
+
+
+def test_definite_nested_brace_limit(calculus):
+    r"""Пределы с вложенными скобками: \int_{\frac{\pi}{2}}^{1} 2x dx = 3/4."""
+    res = calculus.evaluate_query(r"\int_{\frac{\pi}{2}}^{\pi} \sin(x) dx")
+    assert res.value == pytest.approx(1.0)
+
+
+def test_malformed_int_queries_return_none(calculus):
+    r"""Не разобранные \int-запросы — None (раньше вели к падению GUI)."""
+    assert calculus.evaluate_query(r"\int x") is None          # нет dx
+    assert calculus.evaluate_query(r"\int_{0}^{1} x") is None  # нет dx
+    assert calculus.evaluate_query(r"\int_0") is None          # нет предела/тела

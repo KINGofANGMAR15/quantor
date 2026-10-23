@@ -75,6 +75,21 @@ def test_parse_latex_side(engine):
     assert sp.simplify(exprs[0] - sp.sin(sp.Symbol("x")) / 2) == 0
 
 
+def test_parse_line_latex_relational_signs(engine):
+    r"""\leq/\geq в неявных графиках — знаки распознаются как вид области.
+
+    Раньше «x^2+y^2 \leq 16» не находило оператора и падало с вводящим в
+    заблуждение «функция должна зависеть только от x».
+    """
+    from quantor.plotter import parse_lines
+    specs = parse_lines(r"x^2+y^2 \leq 16", engine)
+    assert specs[0]["kind"] == "le"
+    specs = parse_lines(r"x^2+y^2 \geq 16", engine)
+    assert specs[0]["kind"] == "ge"
+    specs = parse_lines(r"y \leq x^2", engine)
+    assert specs[0]["kind"] == "le"
+
+
 def test_parse_log_subscript(engine):
     """Обычный текст «y=log_2 x» — основание подчёркиванием, как в учебниках."""
     exprs = parse_functions("y=log_2 x", engine)

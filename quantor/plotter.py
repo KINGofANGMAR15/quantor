@@ -23,7 +23,10 @@ import numpy as np
 import sympy as sp
 from sympy.core.relational import Relational
 
-from .engine import CalculatorEngine, CalculatorError, format_exact, _fmt_number, _exact_to_number
+from .engine import (
+    CalculatorEngine, CalculatorError, format_exact, _fmt_number,
+    _exact_to_number, _normalize_latex_ops,
+)
 from .latex_input import LatexParseError
 
 __all__ = [
@@ -132,6 +135,9 @@ def _parse_line(line: str, engine: CalculatorEngine, var: str,
 
     Оператор: '=' или знак неравенства — значит строка неявная.
     """
+    # \leq/\geq/\le/… -> <=/>=/…: иначе LaTeX-знак не находится поиском и
+    # строка уходит в разбор «функции» с вводящим в заблуждение отказом
+    line = _normalize_latex_ops(line)
     for op in (_REL_OPS + ("=",)):
         # знак внутри функций типа log(8,2) не бывает; ищем первый сверху
         idx = line.find(op)

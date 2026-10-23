@@ -68,9 +68,14 @@ def parse_input(text: str, engine: Optional[CalculatorEngine] = None) -> sp.Expr
         return _parse_latex_expr(text)
     eng = _default_engine()  # RAD: чистая математика без угловой конверсии
     try:
-        return eng._parse(text, eng._namespace())
+        expr = eng._parse(text, eng._namespace())
     except Exception as exc:
         raise LatexParseError(f"Не удалось разобрать выражение: {exc}") from exc
+    if not isinstance(expr, sp.Basic):
+        # всё выражение — имя-константа (e, C, Ans): движок даёт python-число
+        from .engine import number_to_sympy
+        expr = number_to_sympy(expr)
+    return expr
 
 
 # ---------------------------------------------------------------------------

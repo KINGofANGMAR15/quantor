@@ -49,6 +49,16 @@ def test_quartic_numeric_bounds(engine):
     assert abs(hi - 1.2207440848) < 1e-8
 
 
+def test_tiny_coefficient_scale(engine):
+    """Пробная точка не должна совпадать с корнем огромного масштаба.
+
+    «1e-20x<2» ⟺ x < 2e20; раньше из-за округления float пробовалась сама
+    точка 2e20 (f=0) и ответ получался «x < 2e20 или x > 2e20» — неверный.
+    """
+    assert engine.solve_inequality("1e-20*x<2") == ["x < 2e20"]
+    assert engine.solve_inequality("1e-20*x+2>0") == ["x > -2e20"]
+
+
 def test_unicode_signs(engine):
     assert engine.solve_inequality("x^2−4≤0") == ["-2 ≤ x ≤ 2"]
     assert engine.solve_inequality("x^2−4≥0") == ["x ≤ -2 или x ≥ 2"]

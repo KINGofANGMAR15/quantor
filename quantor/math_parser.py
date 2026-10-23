@@ -48,6 +48,12 @@ MAX_DEPTH              50         вложенность скобок и выз�
 могут дать до ~10^6 цифр в пределах лимита длины (десятки миллисекунд —
 измерено: 40 множителей ``9^9999`` ≈ 0.26 с, 810 000 цифр).
 
+Те же лимиты применяются к подстановкам значений в уже разобранные
+выражения (пределы интегрирования, точка вычисления производной):
+``safe_substitution``/``poly_growth_guard`` — гард парсера действует
+только на литералы строки, а SymPy вычисляет ``2^(10^15/3)`` и
+``factorial(10^15)`` от подставленных значений жадно.
+
 Ошибки вычисления переданных функций (например ``CalculatorError`` от
 ``log(1, 1)``) пробрасываются как есть — движок сам решает, что показать
 пользователю.
@@ -62,7 +68,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import sympy as sp
 
-__all__ = ["MathParseError", "parse", "MAX_INPUT_LEN", "MAX_NODES", "MAX_DEPTH"]
+__all__ = ["MathParseError", "parse", "pow_guard", "safe_substitution",
+           "poly_growth_guard", "MAX_INPUT_LEN", "MAX_NODES", "MAX_DEPTH"]
 
 
 class MathParseError(Exception):
@@ -170,8 +177,8 @@ def _integer_digits(value: sp.Basic) -> int:
     return _est(p) + _est(q)
 
 
-def _make_pow(base: sp.Basic, exp: sp.Basic) -> sp.Basic:
-    """Возведение в степень с проверкой размера ДО вычисления SymPy.
+def pow_guard(base: sp.Basic, exp: sp.Basic) -> None:
+    """Проверить размер результата ``base ** exp`` ДО вычисления SymPy.
 
     Опасны целые показатели точного (Integer/Rational) основания. SymPy
     для рационального показателя выделяет ЦЕЛУЮ ЧАСТЬ
@@ -192,7 +199,79 @@ def _make_pow(base: sp.Basic, exp: sp.Basic) -> sp.Basic:
                 raise MathParseError(
                     "Слишком большая степень: результат не поместится "
                     f"(~{digits} цифр)")
+
+
+def _make_pow(base: sp.Basic, exp: sp.Basic) -> sp.Basic:
+    """Возведение в степень с проверкой размера (см. ``pow_guard``)."""
+    pow_guard(base, exp)
     return base ** exp
+
+
+def _bound_digits(bound: sp.Basic) -> int:
+    """Оценка числа десятичных цифр значения границы (для роста полинома)."""
+    if bound.is_Rational:
+        return _integer_digits(bound)
+    try:
+        f = abs(float(bound))
+        if f == 0.0 or not math.isfinite(f):
+            return 1
+        return int(math.log10(f)) + 1
+    except (TypeError, ValueError, OverflowError):
+        return 1
+
+
+def safe_substitution(expr: sp.Basic, sym: sp.Symbol, value: sp.Basic) -> None:
+    """Отвергнуть подстановку ``sym -> value``, если она создаст «бомбу».
+
+    Гард ``_make_pow`` работает только на литералах при разборе строки, а
+    пределы интегралов и точка вычисления производной подставляются в уже
+    разобранное выражение — ``2^x`` с пределом ``10^15/3`` построило бы
+    степень с ~10^14 цифрами (измерено: 10 с и MemoryError). Здесь те же
+    лимиты применяются к каждой степени/факториалу, зависящему от ``sym``.
+    """
+    if not isinstance(expr, sp.Basic) or sym not in expr.free_symbols:
+        return
+    # степени: проверяем ДО подстановки — сама подстановка и есть «взрыв»
+    for p in expr.atoms(sp.Pow):
+        if sym not in p.free_symbols:
+            continue
+        base = p.base.subs(sym, value) if sym in p.base.free_symbols else p.base
+        exp = p.exp.subs(sym, value) if sym in p.exp.free_symbols else p.exp
+        pow_guard(base, exp)
+    # факториалы и гамма: SymPy вычисляет их от Integer жадно (diff от x!
+    # выражается через gamma(x+1), поэтому одного factorial мало)
+    for fn in (sp.factorial, sp.factorial2, sp.gamma):
+        for node in expr.atoms(fn):
+            if sym not in node.free_symbols:
+                continue
+            arg = node.args[0].subs(sym, value)
+            if arg.is_Integer and int(arg) >= 0:
+                digits = _factorial_digits(int(arg))
+                if digits > _MAX_RESULT_DIGITS:
+                    raise MathParseError(
+                        f"Слишком большой факториал: ~{digits} цифр результата")
+
+
+def poly_growth_guard(expr: sp.Basic, sym: sp.Symbol, value: sp.Basic) -> None:
+    """Оценка роста полиномиальной части при подстановке ``value``.
+
+    ``∫₀^b xⁿ dx = bⁿ⁺¹/(n+1)``: интегрирование само создаёт новые степени,
+    поэтому для полинома степени n ограничиваем (n+1)·(цифр b) тем же
+    лимитом цифр, что и у степеней парсера.
+    """
+    if not isinstance(value, sp.Basic) or value.free_symbols:
+        return
+    try:
+        deg = sp.degree(expr, sym)
+    except Exception:
+        return
+    if not deg.is_Integer:
+        return
+    digits = (int(deg) + 1) * _bound_digits(value)
+    if digits > _MAX_RESULT_DIGITS:
+        raise MathParseError(
+            "Слишком большая степень: результат не поместится "
+            f"(~{digits} цифр)")
 
 
 def _factorial_digits(n: int) -> int:

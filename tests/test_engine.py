@@ -184,3 +184,52 @@ def test_exact_display_misc(engine):
     assert engine.calculate("0.1+0.2")[0] == "0.3"
     assert engine.calculate("sqrt(-4)")[0] == "2i"
     assert engine.calculate("123456/7")[0] == "123456/7"
+
+
+# ------------------------------------- численный решатель: ложные сходимости
+def test_numeric_fallback_rejects_decaying_tail(engine):
+    """nsolve «сходится» на затухающем хвосте: 1/x→0 и e^x→0 при огромных x.
+
+    Раньше «1/x=0» выдавал 16 мусорных корней вида -8.04e13 (остаток
+    1e-14 < 1e-6 при том, что функция рядом такая же малая, — нет «провала»).
+    """
+    with pytest.raises(CalculatorError, match="Корней не найдено"):
+        engine.solve_equation("1/x=0")
+    with pytest.raises(CalculatorError, match="Корней не найдено"):
+        engine.solve_equation("e^x=0")
+
+
+def test_numeric_roots_genuine_still_found(engine):
+    """Настоящие корни nsolve находит как прежде (есть «провал» к нулю).
+
+    В DEG sin(x²)=0.3 — трансцендентное, решается численно: ±4.178, ±12.749.
+    """
+    import math
+    roots = engine.solve_equation("sin(x^2)=0.3")
+    assert len(roots) == 4
+    for r in roots:
+        assert abs(math.sin(math.radians(r * r)) - 0.3) < 1e-6
+    assert any(abs(abs(r) - 12.7492116178) < 1e-6 for r in roots)
+
+
+def test_modulo_zero_message(engine):
+    """sp.Mod(2, 0) бросает ZeroDivisionError — это деление на ноль,
+    а не «Ошибка ввода» (раньше маскировалось общим перехватом)."""
+    with pytest.raises(CalculatorError, match="Деление на ноль"):
+        engine.calculate("2%0")
+
+
+def test_pole_message_mentions_undefined(engine):
+    """tan(90°) и (-3)!: полюс/неопределённость — текст отражает суть."""
+    with pytest.raises(CalculatorError, match="не определено"):
+        engine.calculate("tan(90)")
+    with pytest.raises(CalculatorError, match="не определено"):
+        engine.calculate("(-3)!")
+
+
+def test_new_constants_available(engine):
+    """hbar (ħ обещан README), eps0, mu0, R — значения уже были в constants."""
+    assert engine.calculate("hbar")[1] == pytest.approx(1.054571817e-34)
+    assert engine.calculate("eps0")[1] == pytest.approx(8.8541878128e-12)
+    assert engine.calculate("mu0")[1] == pytest.approx(1.25663706212e-6)
+    assert engine.calculate("R")[1] == pytest.approx(8.314462618)

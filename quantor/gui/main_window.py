@@ -313,8 +313,14 @@ class MainWindow(QMainWindow):
             return
         try:
             if is_calculus_query(text):
-                self._show_calculus(self.calculus.evaluate_query(text))
-            elif INEQ_RE.search(text):
+                res = self.calculus.evaluate_query(text)
+                if res is not None:
+                    self._show_calculus(res)
+                    return
+                # похоже на матанализ, но шаблону не соответствует
+                # (\int без dx, непривычная запись пределов) — идём дальше:
+                # общий путь даст понятную ошибку разбора
+            if INEQ_RE.search(text):
                 self._show_inequality(text)
             elif is_latex(text):
                 self._show_symbolic(parse_input(text, self.engine))
@@ -388,7 +394,8 @@ class MainWindow(QMainWindow):
             self._show_error(f"Внутренняя ошибка: {exc.__class__.__name__}")
             return
         shown = " или ".join(_format_solution_set(sol, var))
-        prefix = "" if shown.startswith("x =") else "= "  # без дубля «x = 1»
+        # без дубля переменной: «x = 5», а не «= x = 5» (для любой переменной)
+        prefix = "" if shown.startswith(f"{var} =") else "= "
         self._last_value = None  # Ans не трогаем: число здесь не при чём
         self._history.append((text, shown))
         self.result.setText(f"{prefix}{shown}")
@@ -467,22 +474,32 @@ class MainWindow(QMainWindow):
     def _current_value(self) -> float:
         """Число с дисплея: результат последнего '=' или пересчёт ввода."""
         if self._last_value is not None and not self.input.text().strip():
-            return float(self._last_value)
+            return self._mem_value(self._last_value)
         text = self.input.text().strip()
         if not text:
-            return float(self._last_value or 0.0)
+            return self._mem_value(self._last_value or 0.0)
         if is_calculus_query(text):
             res = self.calculus.evaluate_query(text)
             if res.value is None:
                 raise ValueError("Результат не является числом")
-            return float(res.value)
+            return self._mem_value(res.value)
         if is_latex(text):
             expr = parse_input(text, self.engine)
             if expr.free_symbols:
                 raise ValueError("В выражении есть неизвестные")
-            return float(sp.N(expr))
+            return self._mem_value(sp.N(expr))
         _shown, value = self.engine.calculate(text)
-        return float(value)
+        return self._mem_value(value)
+
+    @staticmethod
+    def _mem_value(value) -> float:
+        """Число для ячеек памяти (M+/M−): комплексные не сохраняются."""
+        if isinstance(value, complex):
+            raise ValueError("Комплексное число нельзя сохранить в память")
+        try:
+            return float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Результат не является числом") from exc
 
     def _mem_add(self) -> None:
         try:

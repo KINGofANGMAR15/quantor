@@ -92,13 +92,20 @@ def _dedupe_roots(roots: List[sp.Basic]) -> List[sp.Basic]:
 
 
 def _sample_f(f: sp.Basic, sym: sp.Symbol, lo: sp.Basic, hi: sp.Basic) -> float:
-    """Знак f в пробной точке интервала (lo, hi)."""
+    """Знак f в пробной точке интервала (lo, hi).
+
+    Точка выбирается строго внутри и с запасом от концов: для границ
+    огромного масштаба «hi − 1.0» совпадает с hi из-за округления float
+    («1e-20x<2» пробовалось в самом корне 2e20 и давало неверный ответ).
+    """
     if lo == -sp.oo and hi == sp.oo:
         x0 = 0.0
     elif lo == -sp.oo:
-        x0 = float(sp.N(hi)) - 1.0
+        end = float(sp.N(hi))
+        x0 = end - max(1.0, abs(end))
     elif hi == sp.oo:
-        x0 = float(sp.N(lo)) + 1.0
+        start = float(sp.N(lo))
+        x0 = start + max(1.0, abs(start))
     else:
         x0 = (float(sp.N(lo)) + float(sp.N(hi))) / 2.0
     return float(sp.N(f.subs(sym, x0)))
@@ -122,6 +129,8 @@ def _poly_ineq_set(f: sp.Basic, sym: sp.Symbol, op: str) -> sp.Set:
         if lo == hi:            # вырожденный интервал между дубликатами
             continue
         val = _sample_f(f, sym, lo, hi)
+        if val != val:          # NaN — знак определить нельзя, пропускаем
+            continue
         if (val > 0) == want_pos:
             intervals.append(sp.Interval(
                 lo, hi,
@@ -200,7 +209,8 @@ def _exact_to_number(node: sp.Basic) -> Number:
     частью сокращается до числа соответствующего типа.
     """
     if node is sp.zoo or node == sp.nan:
-        raise CalculatorError("Деление на ноль")
+        # полюс (tan(90°), 1/0) и неопределённость (0/0) приходят одинаково
+        raise CalculatorError("Деление на ноль или значение не определено")
     if node in (sp.oo, -sp.oo):
         raise CalculatorError("Результат бесконечен")
     if getattr(node, "free_symbols", None):
@@ -661,6 +671,9 @@ class CalculatorEngine:
             raise
         except MathParseError as exc:
             raise CalculatorError(str(exc)) from exc
+        except ZeroDivisionError:
+            # sp.Mod(2, 0) и подобные — это деление на ноль, а не плохой ввод
+            raise CalculatorError("Деление на ноль") from None
         except Exception as exc:
             # ошибки вычисления переданных функций (неверное число
             # аргументов, SympifyError и т.п.) — в понятный текст;
@@ -799,7 +812,7 @@ class CalculatorEngine:
         return _sort_roots([_exact_to_number(s) for s in solutions])
 
     def _numeric_roots(self, f: sp.Basic, sym: sp.Symbol) -> List[float]:
-        """Численный запасной поиск (nsolve с разных стартов), только вещественные."""
+        """Численный запасный поиск (nsolve с разных стартов), только вещественные."""
         found: List[float] = []
         for start in _NUM_STARTS:
             try:
@@ -815,9 +828,34 @@ class CalculatorEngine:
                 continue
             if residue > 1e-6:
                 continue
+            if not self._root_has_dip(f, sym, xv):
+                continue    # ложная сходимость на «затухающем хвосте»
             if not any(abs(xv - r0) <= 1e-7 * max(1.0, abs(xv)) for r0 in found):
                 found.append(xv)
         return found
+
+    @staticmethod
+    def _root_has_dip(f: sp.Basic, sym: sp.Symbol, xv: float) -> bool:
+        """Настоящий корень: |f| в точке сильно меньше, чем у соседей.
+
+        nsolve «сходится» и на убывающем хвосте: у ``1/x=0`` на x≈8e13
+        остаток 1e-14 < 1e-6, хотя корня нет — |f| рядом такая же. У
+        настоящего корня ``2^x=8`` в x=3 функция проваливается к нулю
+        относительно окрестности.
+        """
+        delta = 1e-6 * max(1.0, abs(xv))
+        try:
+            here = abs(float(sp.N(f.subs(sym, xv))))
+            left = abs(float(sp.N(f.subs(sym, xv - delta))))
+            right = abs(float(sp.N(f.subs(sym, xv + delta))))
+        except (TypeError, ValueError, ZeroDivisionError):
+            return True                     # проверить не удалось — не мешаем
+        if not all(math.isfinite(v) for v in (here, left, right)):
+            return True
+        neighbors = max(left, right)
+        if neighbors == 0.0:
+            return True
+        return here <= 1e-6 * neighbors
 
     # --- неравенства -----------------------------------------------------------
     def solve_inequality_set(self, text: str, var: str = None) -> sp.Set:

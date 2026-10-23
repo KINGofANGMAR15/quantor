@@ -28,6 +28,7 @@ import sympy as sp
 
 from .engine import CalculatorEngine, CalculatorError
 from .latex_input import LatexParseError, is_latex, parse_input, to_latex
+from .math_parser import MathParseError, poly_growth_guard, safe_substitution
 
 Number = Union[int, float, complex]
 
@@ -45,10 +46,63 @@ class CalculusResult:
 # Регулярные выражения запросов
 # ---------------------------------------------------------------------------
 
-_RE_INT_DEF = re.compile(
-    r"^\s*\\int\s*_\{([^{}]+)\}\s*\^\{([^{}]+)\}\s*(.+?)\s*d\s*([a-zA-Z])\s*$")
 _RE_INT_INDEF = re.compile(
     r"^\s*\\int\s+(.+?)\s*d\s*([a-zA-Z])\s*$")
+#: одиночный атом предела без скобок: 0, -1, 2.5, \pi, \infty, e, oo
+_LIMIT_ATOM = re.compile(
+    r"(-?(?:\\[a-zA-Z]+|[0-9]+(?:\.[0-9]+)?|[A-Za-z][A-Za-z0-9_]{0,3}))")
+
+
+def _take_braces(text: str) -> "tuple[str | None, str]":
+    """``{...}`` с учётом вложенности: -> (группа со скобками, остаток)."""
+    depth = 0
+    for i, ch in enumerate(text):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[:i + 1], text[i + 1:]
+    return None, text
+
+
+def _match_int_definite(t: str):
+    r"""``\int [_{a}^{b} | _a^b] body d<var>`` — определённый интеграл.
+
+    Пределы — в скобках (в т.ч. вложенных: ``\int_{\frac{\pi}{2}}^{1}``)
+    или одиночные атомы (``\int_0^\pi``). Возвращает (a, b, body, var)
+    или None, если это не определённый интеграл.
+    """
+    m = re.match(r"^\\int\s*(?:\\limits\s*)?", t)
+    if not m:
+        return None
+    rest = t[m.end():]
+    limits = []
+    for prefix in ("_", "^"):
+        if not rest.startswith(prefix):
+            return None                      # нужно ОБА предела
+        rest = rest[len(prefix):].lstrip()
+        if rest.startswith("{"):
+            group, rest = _take_braces(rest)
+            if group is None:
+                return None
+            limits.append(group[1:-1])
+            rest = rest.lstrip()
+        else:
+            m2 = _LIMIT_ATOM.match(rest)
+            if not m2:
+                return None
+            limits.append(m2.group(1))
+            rest = rest[m2.end():].lstrip()
+    m3 = re.search(r"\s+d\s*([a-zA-Z])\s*$", rest)
+    if not m3:
+        return None
+    body = rest[:m3.start()].strip()
+    if not body:
+        return None
+    return limits[0], limits[1], body, m3.group(1)
+
+
 _RE_DERIV = re.compile(
     r"^\s*\\frac\s*\{\s*d(\^\{?(\d+)\}?)?\s*\}"
     r"\s*\{\s*d([a-zA-Z])(\^\{?(\d+)\}?)?\s*\}\s*(.+?)\s*$")
@@ -97,6 +151,7 @@ class CalculusEngine:
         sym = sp.Symbol(var)
         f = self._as_expr(expr, var)
         a_s, b_s = self._as_expr(a), self._as_expr(b)
+        self._check_bounds(f, sym, a_s, b_s)
 
         symbolic = None
         try:
@@ -135,7 +190,15 @@ class CalculusEngine:
                             x0: Any = 0, order: int = 1) -> float:
         """Значение d^n f/dx^n в точке x0 (evalf)."""
         d, _ = self.derivative(expr, var, order)
-        val = d.subs(sp.Symbol(var), self._as_expr(x0))
+        x0_s = self._as_expr(x0)
+        sym = sp.Symbol(var)
+        try:
+            # подстановка большой степени/факториала — «бомба» памяти; гард
+            safe_substitution(d, sym, x0_s)
+            poly_growth_guard(d, sym, x0_s)
+        except MathParseError as exc:
+            raise ValueError(str(exc)) from exc
+        val = d.subs(sym, x0_s)
         if val.free_symbols:
             raise ValueError("Точка должна быть числом")
         return float(sp.N(val))
@@ -151,9 +214,9 @@ class CalculusEngine:
         if not t:
             return None
 
-        m = _RE_INT_DEF.match(t)
+        m = _match_int_definite(t)
         if m:
-            a, b, body, var = m.group(1), m.group(2), m.group(3), m.group(4)
+            a, b, body, var = m
             return self._definite_from_parts(body, var, a, b)
 
         m = _RE_INT_INDEF.match(t)
@@ -239,6 +302,22 @@ class CalculusEngine:
             latex=f"{head}{body_latex} = {latex}",
             value=None)
 
+    @staticmethod
+    def _check_bounds(f: sp.Basic, sym: sp.Symbol,
+                      a_s: sp.Basic, b_s: sp.Basic) -> None:
+        """Пределы интегрирования не должны создавать «вычислительную бомбу».
+
+        ``∫₀^{10^15/3} 2^x dx``: гард парсера на литералы здесь не действует
+        (предел — отдельная строка), а SymPy жадно вычисляет 2^(10^15/3)
+        (измерено: 10 с и MemoryError). Правила те же, что у парсера.
+        """
+        try:
+            for bound in (a_s, b_s):
+                safe_substitution(f, sym, bound)
+                poly_growth_guard(f, sym, bound)
+        except MathParseError as exc:
+            raise CalculatorError(str(exc)) from exc
+
     def _numeric_integral(self, f: sp.Basic, sym: sp.Symbol,
                           a_s: sp.Basic, b_s: sp.Basic):
         """Численное значение через mpmath.quad; (None, None) при неудаче."""
@@ -266,11 +345,30 @@ class CalculusEngine:
             return mpmath.inf if limit is sp.oo else -mpmath.inf
         return mpmath.mpf(str(sp.N(limit, 25)))
 
+    #: записи бесконечности в пределах интегрирования
+    _INF_STRINGS = {"oo": sp.oo, "inf": sp.oo, "∞": sp.oo, r"\infty": sp.oo}
+
     def _as_expr(self, obj: Any, var: str = "x") -> sp.Basic:
-        """Строка -> SymPy-выражение (LaTeX или обычная), Expr -> как есть."""
+        """Строка -> SymPy-выражение (LaTeX или обычная), Expr -> как есть.
+
+        Отдельно распознаётся бесконечность (``oo``, ``\\infty``, ``∞`` со
+        знаком): иначе ``oo`` стал бы неизвестным Symbol и вывод выглядел бы
+        как «1 - exp(-oo)».
+        """
         if isinstance(obj, sp.Basic):
             return obj
-        return parse_input(str(obj), self._parse_engine)
+        s = str(obj).strip().replace("−", "-")
+        neg = s.startswith("-")
+        if neg or s.startswith("+"):
+            s = s[1:].strip()
+        if s in self._INF_STRINGS:
+            return -sp.oo if neg else sp.oo
+        expr = parse_input(s, self._parse_engine)
+        if not isinstance(expr, sp.Basic):
+            # имя-константа (e, C, …) движок возвращает как python-число
+            from .engine import number_to_sympy
+            expr = number_to_sympy(expr)
+        return expr
 
 
 # ---------------------------------------------------------------------------
